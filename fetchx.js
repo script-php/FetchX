@@ -105,55 +105,53 @@ class FetchX {
   }
 
   // GET request
-  get(url, params = null) {
-    return new Promise((resolve, reject) => {
-      let query = params ? "?" + new URLSearchParams(params).toString() : "";
-      this._prepareRequest("GET", url + query);
-      this._handleResponse(resolve, reject);
-      this.xhr.send();
-    });
+  async get(url, params = null) {
+    let query = params ? "?" + new URLSearchParams(params).toString() : "";
+    this._prepareRequest("GET", url + query);
+    return await this._executeRequest();
   }
 
   // POST request
-  post(url, data = {}) {
-    return new Promise((resolve, reject) => {
-      this._prepareRequest("POST", url);
-      this._handleResponse(resolve, reject);
-      this._sendData(data);
-    });
+  async post(url, data = {}) {
+    this._prepareRequest("POST", url);
+    return await this._executeRequest(data);
   }
 
   // PUT request
-  put(url, data = {}) {
-    return new Promise((resolve, reject) => {
-      this._prepareRequest("PUT", url);
-      this._handleResponse(resolve, reject);
-      this._sendData(data);
-    });
+  async put(url, data = {}) {
+    this._prepareRequest("PUT", url);
+    return await this._executeRequest(data);
   }
 
   // DELETE request
-  delete(url, data = null) {
-    return new Promise((resolve, reject) => {
-      this._prepareRequest("DELETE", url);
-      this._handleResponse(resolve, reject);
-      this._sendData(data);
-    });
+  async delete(url, data = null) {
+    this._prepareRequest("DELETE", url);
+    return await this._executeRequest(data);
   }
 
   // PATCH request
-  patch(url, data = {}) {
+  async patch(url, data = {}) {
+    this._prepareRequest("PATCH", url);
+    return await this._executeRequest(data);
+  }
+
+  // Unified request execution
+  _executeRequest(data = null) {
     return new Promise((resolve, reject) => {
-      this._prepareRequest("PATCH", url);
       this._handleResponse(resolve, reject);
-      this._sendData(data);
+      if (data !== null) {
+        this._sendData(data);
+      } else {
+        this.xhr.send();
+      }
     });
   }
 
   // File upload with progress
-  upload(url, formData, onProgress = null) {
+  async upload(url, formData, onProgress = null) {
+    this._prepareRequest("POST", url);
+    
     return new Promise((resolve, reject) => {
-      this._prepareRequest("POST", url);
       if (onProgress) {
         this.xhr.upload.onprogress = (e) => {
           if (e.lengthComputable)
@@ -164,9 +162,34 @@ class FetchX {
       this.xhr.send(formData);
     });
   }
+
+  // Static helper methods
+  static async get(url, params = null) {
+    return await new FetchX().get(url, params);
+  }
+
+  static async post(url, data = {}) {
+    return await new FetchX().post(url, data);
+  }
+
+  static async put(url, data = {}) {
+    return await new FetchX().put(url, data);
+  }
+
+  static async delete(url, data = null) {
+    return await new FetchX().delete(url, data);
+  }
+
+  static async patch(url, data = {}) {
+    return await new FetchX().patch(url, data);
+  }
 }
 
 // Global helper function
 function fetchx() {
   return new FetchX();
 }
+
+// ES module exports
+export default fetchx;
+export { FetchX };
