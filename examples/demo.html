@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FetchX Demo</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    h1 {
+      color: #333;
+      border-bottom: 2px solid #eee;
+      padding-bottom: 10px;
+    }
+    .demo-section {
+      margin: 30px 0;
+      padding: 20px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background-color: #f9f9f9;
+    }
+    button {
+      background-color: #4CAF50;
+      border: none;
+      color: white;
+      padding: 10px 15px;
+      text-align: center;
+      text-decoration: none;
+      display: inline-block;
+      font-size: 16px;
+      margin: 10px 5px;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    .result {
+      margin-top: 15px;
+      padding: 15px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background-color: white;
+      min-height: 50px;
+      white-space: pre-wrap;
+    }
+    .error {
+      color: #D8000C;
+      background-color: #FFD2D2;
+    }
+    .progress-container {
+      width: 100%;
+      background-color: #ddd;
+      border-radius: 4px;
+      margin: 10px 0;
+    }
+    .progress-bar {
+      width: 0%;
+      height: 20px;
+      background-color: #4CAF50;
+      border-radius: 4px;
+      text-align: center;
+      line-height: 20px;
+      color: white;
+    }
+    .code-sample {
+      background-color: #f5f5f5;
+      padding: 10px;
+      border-radius: 4px;
+      overflow-x: auto;
+      margin: 10px 0;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <h1>FetchX Demo with async/await</h1>
+  
+  <div class="demo-section">
+    <h2>GET Request to JSONPlaceholder API</h2>
+    <p>This example demonstrates a basic GET request to fetch todos from JSONPlaceholder.</p>
+    <div class="code-sample">
+      <pre>// Using instance method
+const response = await fetchx()
+  .timeout(5000)
+  .responseType('json')
+  .get('https://jsonplaceholder.typicode.com/todos?_limit=5');
+
+// Using static method
+const response = await FetchX.get('https://jsonplaceholder.typicode.com/todos?_limit=5');</pre>
+    </div>
+    <button id="getTodosBtn">Fetch Todos</button>
+    <button id="getTodosStaticBtn">Fetch Todos (Static Method)</button>
+    <div id="getTodosResult" class="result">Results will appear here...</div>
+  </div>
+
+  <div class="demo-section">
+    <h2>POST Request</h2>
+    <p>This example demonstrates creating a new post with a POST request.</p>
+    <div class="code-sample">
+      <pre>const data = {
+  title: 'FetchX Demo Post',
+  body: 'This is a test post created using FetchX',
+  userId: 1
+};
+
+const response = await fetchx()
+  .header('Content-Type', 'application/json')
+  .post('https://jsonplaceholder.typicode.com/posts', data);</pre>
+    </div>
+    <button id="createPostBtn">Create Post</button>
+    <div id="createPostResult" class="result">Results will appear here...</div>
+  </div>
+
+  <div class="demo-section">
+    <h2>Error Handling</h2>
+    <p>This example demonstrates how to handle errors with async/await syntax.</p>
+    <div class="code-sample">
+      <pre>try {
+  const response = await fetchx()
+    .timeout(2000) // Short timeout to trigger an error
+    .get('https://jsonplaceholder.typicode.com/invalid-endpoint');
+  console.log(response.data);
+} catch (error) {
+  console.error('Request failed:', error);
+}</pre>
+    </div>
+    <button id="errorBtn">Trigger Error</button>
+    <div id="errorResult" class="result">Results will appear here...</div>
+  </div>
+
+  <div class="demo-section">
+    <h2>File Upload with Progress</h2>
+    <p>This example demonstrates uploading a file with progress tracking.</p>
+    <div class="code-sample">
+      <pre>const formData = new FormData();
+formData.append('file', fileInput.files[0]);
+
+await fetchx().upload(
+  'https://httpbin.org/post', 
+  formData, 
+  (progress) => {
+    // Update progress bar
+    progressBar.style.width = progress + '%';
+    progressBar.textContent = progress + '%';
+  }
+);</pre>
+    </div>
+    <input type="file" id="fileInput">
+    <button id="uploadBtn">Upload File</button>
+    <div class="progress-container">
+      <div id="progressBar" class="progress-bar">0%</div>
+    </div>
+    <div id="uploadResult" class="result">Results will appear here...</div>
+  </div>
+
+  <div class="demo-section">
+    <h2>Multiple Sequential Requests</h2>
+    <p>This example demonstrates chaining multiple requests using async/await.</p>
+    <div class="code-sample">
+      <pre>async function fetchUserAndPosts(userId) {
+  // First request - get user
+  const userResponse = await fetchx().get(
+    `https://jsonplaceholder.typicode.com/users/${userId}`
+  );
+  
+  // Second request - get user's posts using data from first request
+  const postsResponse = await fetchx().get(
+    `https://jsonplaceholder.typicode.com/posts?userId=${userResponse.data.id}`
+  );
+  
+  return {
+    user: userResponse.data,
+    posts: postsResponse.data
+  };
+}</pre>
+    </div>
+    <button id="chainBtn">Fetch User and Posts</button>
+    <div id="chainResult" class="result">Results will appear here...</div>
+  </div>
+
+
+<script src="fetchx.js"></script>
+
+  <script>
+    
+
+    // Helper function to display results
+    function displayResult(elementId, data, isError = false) {
+      const element = document.getElementById(elementId);
+      element.innerHTML = JSON.stringify(data, null, 2);
+      if (isError) {
+        element.classList.add('error');
+      } else {
+        element.classList.remove('error');
+      }
+    }
+
+    // GET Request Example
+    document.getElementById('getTodosBtn').addEventListener('click', async () => {
+      try {
+        const response = await fetchx()
+          .timeout(5000)
+          .responseType('json')
+          .get('https://jsonplaceholder.typicode.com/todos?_limit=5');
+        
+        displayResult('getTodosResult', response.data);
+      } catch (error) {
+        displayResult('getTodosResult', error, true);
+      }
+    });
+
+    // GET with Static Method Example
+    document.getElementById('getTodosStaticBtn').addEventListener('click', async () => {
+      try {
+        const response = await FetchX.get('https://jsonplaceholder.typicode.com/todos?_limit=5');
+        displayResult('getTodosResult', response.data);
+      } catch (error) {
+        displayResult('getTodosResult', error, true);
+      }
+    });
+
+    // POST Request Example
+    document.getElementById('createPostBtn').addEventListener('click', async () => {
+      try {
+        const data = {
+          title: 'FetchX Demo Post',
+          body: 'This is a test post created using FetchX',
+          userId: 1
+        };
+        
+        const response = await fetchx()
+          .header('Content-Type', 'application/json')
+          .post('https://jsonplaceholder.typicode.com/posts', data);
+        
+        displayResult('createPostResult', response.data);
+      } catch (error) {
+        displayResult('createPostResult', error, true);
+      }
+    });
+
+    // Error Handling Example
+    document.getElementById('errorBtn').addEventListener('click', async () => {
+      try {
+        const response = await fetchx()
+          .timeout(2000)
+          .get('https://jsonplaceholder.typicode.com/invalid-endpoint');
+        
+        displayResult('errorResult', response.data);
+      } catch (error) {
+        displayResult('errorResult', error, true);
+      }
+    });
+
+    // File Upload Example
+    document.getElementById('uploadBtn').addEventListener('click', async () => {
+      const fileInput = document.getElementById('fileInput');
+      const progressBar = document.getElementById('progressBar');
+      
+      if (!fileInput.files.length) {
+        displayResult('uploadResult', { error: 'No file selected' }, true);
+        return;
+      }
+      
+      try {
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        
+        // Using httpbin.org which echoes back the data but doesn't actually store files
+        const response = await fetchx().upload(
+          'https://httpbin.org/post', 
+          formData, 
+          (progress) => {
+            progressBar.style.width = progress + '%';
+            progressBar.textContent = progress + '%';
+          }
+        );
+        
+        displayResult('uploadResult', response.data);
+      } catch (error) {
+        displayResult('uploadResult', error, true);
+      }
+    });
+
+    // Multiple Sequential Requests Example
+    document.getElementById('chainBtn').addEventListener('click', async () => {
+      try {
+        // First request - get user
+        const userId = 1;
+        const userResponse = await fetchx().get(
+          `https://jsonplaceholder.typicode.com/users/${userId}`
+        );
+        
+        // Second request - get user's posts
+        const postsResponse = await fetchx().get(
+          `https://jsonplaceholder.typicode.com/posts?userId=${userResponse.data.id}&_limit=3`
+        );
+        
+        const result = {
+          user: userResponse.data,
+          posts: postsResponse.data
+        };
+        
+        displayResult('chainResult', result);
+      } catch (error) {
+        displayResult('chainResult', error, true);
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FetchX Progress Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .progress-container {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background: #f9f9f9;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background-color: #4CAF50;
+            width: 0%;
+            transition: width 0.3s ease;
+            border-radius: 10px;
+        }
+        
+        .progress-text {
+            text-align: center;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            cursor: pointer;
+            transition: border-color 0.3s;
+        }
+        
+        .upload-area:hover {
+            border-color: #4CAF50;
+        }
+        
+        .upload-area.dragover {
+            border-color: #4CAF50;
+            background-color: #f0f8f0;
+        }
+        
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px;
+        }
+        
+        button:hover {
+            background-color: #45a049;
+        }
+        
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        
+        .log {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fff;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .log-entry {
+            margin: 5px 0;
+            padding: 5px;
+            border-left: 3px solid #4CAF50;
+            background-color: #f9f9f9;
+        }
+        
+        .error {
+            border-left-color: #f44336;
+            background-color: #ffebee;
+        }
+    </style>
+</head>
+<body>
+    <h1>FetchX Progress Feature Test</h1>
+    
+    <div class="progress-container">
+        <h3>File Upload Progress</h3>
+        <div class="upload-area" id="uploadArea">
+            <p>Click here or drag & drop files to upload</p>
+            <input type="file" id="fileInput" style="display: none;" multiple>
+        </div>
+        
+        <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-text" id="progressText">0%</div>
+        
+        <button id="uploadBtn" disabled>Upload Selected Files</button>
+        <button id="simulateBtn">Simulate Large Upload</button>
+    </div>
+    
+    <div class="log" id="log">
+        <div class="log-entry">Ready to test progress feature...</div>
+    </div>
+<script src="fetchx.js"></script>
+    <script>
+
+        // UI Logic
+        const fileInput = document.getElementById('fileInput');
+        const uploadArea = document.getElementById('uploadArea');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const simulateBtn = document.getElementById('simulateBtn');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const log = document.getElementById('log');
+
+        let selectedFiles = [];
+
+        function logMessage(message, isError = false) {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${isError ? 'error' : ''}`;
+            entry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function updateProgress(progress, data = {}) {
+            console.log('Updating progress UI:', progress, data); // Debug log
+            progressFill.style.width = `${progress}%`;
+            progressText.textContent = `${progress}% (${formatBytes(data.loaded || 0)} / ${formatBytes(data.total || 0)})`;
+            logMessage(`Upload progress: ${progress}%`);
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // File input handling
+        uploadArea.addEventListener('click', () => fileInput.click());
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            selectedFiles = Array.from(e.dataTransfer.files);
+            updateFileDisplay();
+        });
+
+        fileInput.addEventListener('change', () => {
+            selectedFiles = Array.from(fileInput.files);
+            updateFileDisplay();
+        });
+
+        function updateFileDisplay() {
+            if (selectedFiles.length > 0) {
+                uploadArea.innerHTML = `<p>Selected ${selectedFiles.length} file(s): ${selectedFiles.map(f => f.name).join(', ')}</p>`;
+                uploadBtn.disabled = false;
+            } else {
+                uploadArea.innerHTML = '<p>Click here or drag & drop files to upload</p>';
+                uploadBtn.disabled = true;
+            }
+        }
+
+        // Upload button handler
+        uploadBtn.addEventListener('click', async () => {
+            if (selectedFiles.length === 0) return;
+
+            const formData = new FormData();
+            selectedFiles.forEach((file, index) => {
+                formData.append(`file${index}`, file);
+            });
+
+            try {
+                uploadBtn.disabled = true;
+                logMessage(`Starting upload of ${selectedFiles.length} file(s)...`);
+                
+                const response = await fetchx().upload(
+                    'https://httpbin.org/post', // Test endpoint that accepts uploads
+                    formData,
+                    {
+                        onProgress: (progress, data) => {
+                            console.log('onProgress callback called:', progress, data);
+                            updateProgress(progress, data);
+                        },
+                        onUploadProgress: (data) => {
+                            console.log('onUploadProgress callback called:', data);
+                            // This is an alternative callback format
+                        }
+                    }
+                );
+
+                logMessage('Upload completed successfully!');
+                console.log('Upload response:', response);
+                
+            } catch (error) {
+                logMessage(`Upload failed: ${error.message}`, true);
+                console.error('Upload error:', error);
+            } finally {
+                uploadBtn.disabled = false;
+            }
+        });
+
+        // Simulate large upload for testing
+        simulateBtn.addEventListener('click', async () => {
+            // Create a large blob to simulate a big file
+            const size = 10 * 1024 * 1024; // 10MB
+            const largeData = new Uint8Array(size);
+            for (let i = 0; i < size; i++) {
+                largeData[i] = Math.floor(Math.random() * 256);
+            }
+            
+            const blob = new Blob([largeData], { type: 'application/octet-stream' });
+            const formData = new FormData();
+            formData.append('largefile', blob, 'test-file.bin');
+
+            try {
+                simulateBtn.disabled = true;
+                logMessage('Starting simulated large upload (10MB)...');
+                
+                const response = await fetchx().upload(
+                    'https://httpbin.org/post',
+                    formData,
+                    {
+                        onProgress: updateProgress
+                    }
+                );
+
+                logMessage('Simulated upload completed!');
+                
+            } catch (error) {
+                logMessage(`Simulated upload failed: ${error.message}`, true);
+            } finally {
+                simulateBtn.disabled = false;
+            }
+        });
+
+        logMessage('Progress test page loaded. Try uploading files or simulate a large upload.');
+    </script>
+</body>
+</html>
