@@ -97,11 +97,32 @@ class FetchX {
 
   // Send data with proper content type
   _sendData(data) {
-    if (!this.headers["Content-Type"] && !(data instanceof FormData)) {
-      this.xhr.setRequestHeader("Content-Type", "application/json");
-      data = JSON.stringify(data);
+    if (data === null || data === undefined) {
+      this.xhr.send();
+      return;
     }
-    this.xhr.send(data);
+
+    let processedData = data;
+
+    // Only set JSON content type if no Content-Type is already set and it's not FormData
+    if (!this.headers["Content-Type"] && !(data instanceof FormData)) {
+      // Check if data needs to be stringified (objects, arrays, but not strings)
+      if (typeof data === "object" && data !== null) {
+        this.headers["Content-Type"] = "application/json"; // Add to headers object
+        this.xhr.setRequestHeader("Content-Type", "application/json");
+        processedData = JSON.stringify(data);
+      }
+    } else if (
+      this.headers["Content-Type"] === "application/json" &&
+      typeof data === "object" &&
+      data !== null &&
+      !(data instanceof FormData)
+    ) {
+      // If Content-Type is already set to JSON, stringify the data
+      processedData = JSON.stringify(data);
+    }
+
+    this.xhr.send(processedData);
   }
 
   // GET request
@@ -150,7 +171,7 @@ class FetchX {
   // File upload with progress
   async upload(url, formData, onProgress = null) {
     this._prepareRequest("POST", url);
-    
+
     return new Promise((resolve, reject) => {
       if (onProgress) {
         this.xhr.upload.onprogress = (e) => {
@@ -189,7 +210,3 @@ class FetchX {
 function fetchx() {
   return new FetchX();
 }
-
-// ES module exports
-export default fetchx;
-export { FetchX };
