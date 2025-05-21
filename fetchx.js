@@ -70,22 +70,34 @@ class FetchX {
       const contentType = this.xhr.getResponseHeader("Content-Type") || '';
       
       try {
-        // Auto-detect response type if not specified
-        if (this._responseType === 'json' || 
-           (this._responseType === '' && contentType.includes('application/json'))) {
-          responseData = this.xhr.responseText ? JSON.parse(this.xhr.responseText) : null;
+        // Handle different response types correctly
+        if (this._responseType === 'json') {
+          // When responseType is 'json', use xhr.response (browser handles JSON parsing)
+          responseData = this.xhr.response;
         } else if (this._responseType === 'blob') {
           responseData = this.xhr.response;
         } else if (this._responseType === 'document') {
-          responseData = this.xhr.responseXML;
+          responseData = this.xhr.responseXML || this.xhr.response;
         } else if (this._responseType === 'arraybuffer') {
           responseData = this.xhr.response;
         } else {
-          responseData = this.xhr.responseText;
+          // For '' or 'text' responseType, we can use responseText
+          const rawText = this.xhr.responseText;
+          
+          // Auto-detect JSON and parse if no specific responseType is set
+          if (this._responseType === '' && contentType.includes('application/json') && rawText) {
+            try {
+              responseData = JSON.parse(rawText);
+            } catch (parseError) {
+              responseData = rawText; // Fallback to raw text if JSON parsing fails
+            }
+          } else {
+            responseData = rawText;
+          }
         }
       } catch (e) {
-        // Fallback to raw text if parsing fails
-        responseData = this.xhr.responseText;
+        // Final fallback - try to get any available response data
+        responseData = this.xhr.response || this.xhr.responseText || null;
       }
 
       const response = {
