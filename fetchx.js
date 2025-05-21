@@ -1,145 +1,275 @@
 class FetchX {
   constructor() {
-    this.xhr = new XMLHttpRequest();
+    this.xhr = null;
     this.headers = {
       Accept: "application/json, text/html",
       "X-Requested-With": "XMLHttpRequest",
     };
-    this.timeout = 0; // 0 means no timeout
-    this.responseType = ""; // 'json', 'text', 'blob', 'arraybuffer', 'document'
+    this._timeout = 0; // 0 means no timeout
+    this._responseType = ""; // 'json', 'text', 'blob', 'arraybuffer', 'document'
+    this.aborted = false;
   }
 
-  // Set request headers
+  // Set request headers (chain-friendly)
   header(key, value) {
-    this.headers[key] = value;
+    if (typeof key === 'object') {
+      // Support object of headers: .header({ 'Content-Type': 'application/json', 'Authorization': 'Bearer token' })
+      Object.assign(this.headers, key);
+    } else {
+      this.headers[key] = value;
+    }
     return this;
   }
 
   // Set timeout in milliseconds
   timeout(ms) {
-    this.timeout = ms;
+    this._timeout = Math.max(0, parseInt(ms) || 0);
     return this;
   }
 
   // Set expected response type
   responseType(type) {
-    this.responseType = type;
+    const validTypes = ['', 'json', 'text', 'blob', 'arraybuffer', 'document'];
+    this._responseType = validTypes.includes(type) ? type : '';
+    return this;
+  }
+
+  // Set base URL for all requests
+  baseURL(url) {
+    this._baseURL = url.replace(/\/$/, ''); // Remove trailing slash
+    return this;
+  }
+
+  // Add request interceptor
+  interceptRequest(fn) {
+    this._requestInterceptor = fn;
+    return this;
+  }
+
+  // Add response interceptor
+  interceptResponse(fn) {
+    this._responseInterceptor = fn;
     return this;
   }
 
   // Abort current request
   abort() {
-    if (this.xhr) this.xhr.abort();
+    this.aborted = true;
+    if (this.xhr) {
+      this.xhr.abort();
+    }
     return this;
   }
 
-  // Handle response
+  // Handle response with better error handling and interceptors
   _handleResponse(resolve, reject) {
     this.xhr.onload = () => {
-      if (this.xhr.status >= 200 && this.xhr.status < 300) {
-        let responseData;
+      if (this.aborted) return;
 
-        if (
-          this.responseType === "json" ||
-          this.xhr
-            .getResponseHeader("Content-Type")
-            ?.includes("application/json")
-        ) {
-          try {
-            responseData = JSON.parse(this.xhr.responseText);
-          } catch (e) {
-            responseData = this.xhr.responseText;
-          }
-        } else if (this.responseType === "blob") {
+      let responseData;
+      const contentType = this.xhr.getResponseHeader("Content-Type") || '';
+      
+      try {
+        // Auto-detect response type if not specified
+        if (this._responseType === 'json' || 
+           (this._responseType === '' && contentType.includes('application/json'))) {
+          responseData = this.xhr.responseText ? JSON.parse(this.xhr.responseText) : null;
+        } else if (this._responseType === 'blob') {
           responseData = this.xhr.response;
-        } else if (this.responseType === "document") {
+        } else if (this._responseType === 'document') {
           responseData = this.xhr.responseXML;
+        } else if (this._responseType === 'arraybuffer') {
+          responseData = this.xhr.response;
         } else {
           responseData = this.xhr.responseText;
         }
+      } catch (e) {
+        // Fallback to raw text if parsing fails
+        responseData = this.xhr.responseText;
+      }
 
-        resolve({
-          data: responseData,
-          status: this.xhr.status,
-          statusText: this.xhr.statusText,
-          xhr: this.xhr,
-        });
+      const response = {
+        data: responseData,
+        status: this.xhr.status,
+        statusText: this.xhr.statusText,
+        headers: this._parseResponseHeaders(this.xhr.getAllResponseHeaders()),
+        config: {
+          url: this.xhr.responseURL || '',
+          method: this._currentMethod,
+          headers: { ...this.headers }
+        },
+        xhr: this.xhr,
+      };
+
+      if (this.xhr.status >= 200 && this.xhr.status < 300) {
+        // Apply response interceptor if exists
+        const finalResponse = this._responseInterceptor ? this._responseInterceptor(response) : response;
+        resolve(finalResponse);
       } else {
+        const error = this._createError(response);
+        reject(error);
+      }
+    };
+
+    this.xhr.onerror = () => {
+      if (!this.aborted) {
         reject(this._createError());
       }
     };
 
-    this.xhr.onerror = () => reject(this._createError());
-    this.xhr.ontimeout = () =>
-      reject({ status: 0, statusText: "Request timeout" });
-
-    if (this.timeout > 0) this.xhr.timeout = this.timeout;
-  }
-
-  // Create error object
-  _createError() {
-    return {
-      status: this.xhr.status || 0,
-      statusText: this.xhr.statusText || "Network Error",
-      response: this.xhr.responseText,
+    this.xhr.ontimeout = () => {
+      if (!this.aborted) {
+        reject(this._createError(null, 'Request timeout'));
+      }
     };
-  }
 
-  // Prepare request
-  _prepareRequest(method, url) {
-    this.xhr = new XMLHttpRequest();
-    this.xhr.open(method, url, true);
-    if (this.responseType) this.xhr.responseType = this.responseType;
-    for (const [key, value] of Object.entries(this.headers)) {
-      this.xhr.setRequestHeader(key, value);
+    this.xhr.onabort = () => {
+      if (this.aborted) {
+        reject(this._createError(null, 'Request aborted'));
+      }
+    };
+
+    if (this._timeout > 0) {
+      this.xhr.timeout = this._timeout;
     }
   }
 
-  // Send data with proper content type
+  // Parse response headers into object
+  _parseResponseHeaders(headerStr) {
+    const headers = {};
+    if (!headerStr) return headers;
+    
+    headerStr.split('\r\n').forEach(line => {
+      const [key, ...valueParts] = line.split(': ');
+      if (key && valueParts.length) {
+        headers[key.toLowerCase()] = valueParts.join(': ');
+      }
+    });
+    return headers;
+  }
+
+  // Create enhanced error object
+  _createError(response = null, message = null) {
+    const error = new Error(message || 'Network Error');
+    error.isNetworkError = true;
+    error.status = response?.status || this.xhr?.status || 0;
+    error.statusText = response?.statusText || this.xhr?.statusText || message || 'Network Error';
+    error.response = response;
+    return error;
+  }
+
+  // Build complete URL
+  _buildURL(url) {
+    if (!url) throw new Error('URL is required');
+    
+    // Return as-is if already absolute URL
+    if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('//')) {
+      return url;
+    }
+    
+    // Prepend base URL if available
+    if (this._baseURL) {
+      return `${this._baseURL}/${url.replace(/^\//, '')}`;
+    }
+    
+    return url;
+  }
+
+  // Prepare request with better error handling
+  _prepareRequest(method, url) {
+    this.aborted = false;
+    this._currentMethod = method.toUpperCase();
+    
+    const fullURL = this._buildURL(url);
+    
+    this.xhr = new XMLHttpRequest();
+    this.xhr.open(method, fullURL, true);
+    
+    if (this._responseType) {
+      this.xhr.responseType = this._responseType;
+    }
+    
+    // Set headers
+    Object.entries(this.headers).forEach(([key, value]) => {
+      if (value !== null && value !== undefined) {
+        this.xhr.setRequestHeader(key, String(value));
+      }
+    });
+  }
+
+  // Enhanced data sending with better content type handling
   _sendData(data) {
     if (data === null || data === undefined) {
       this.xhr.send();
       return;
     }
-
+    
     let processedData = data;
-
-    // Only set JSON content type if no Content-Type is already set and it's not FormData
-    if (!this.headers["Content-Type"] && !(data instanceof FormData)) {
-      // Check if data needs to be stringified (objects, arrays, but not strings)
-      if (typeof data === "object" && data !== null) {
-        this.headers["Content-Type"] = "application/json"; // Add to headers object
-        this.xhr.setRequestHeader("Content-Type", "application/json");
-        processedData = JSON.stringify(data);
+    const hasContentType = this.headers["Content-Type"] || this.headers["content-type"];
+    
+    // Handle different data types
+    if (data instanceof FormData) {
+      // Let browser set Content-Type for FormData (with boundary)
+      processedData = data;
+    } else if (data instanceof Blob || data instanceof ArrayBuffer) {
+      processedData = data;
+    } else if (typeof data === 'string') {
+      // String data - send as-is, set text/plain if no content type
+      if (!hasContentType) {
+        this.xhr.setRequestHeader("Content-Type", "text/plain");
       }
-    } else if (
-      this.headers["Content-Type"] === "application/json" &&
-      typeof data === "object" &&
-      data !== null &&
-      !(data instanceof FormData)
-    ) {
-      // If Content-Type is already set to JSON, stringify the data
+      processedData = data;
+    } else if (typeof data === 'object' && data !== null) {
+      // Object data - JSON stringify and set application/json if no content type
+      if (!hasContentType) {
+        this.xhr.setRequestHeader("Content-Type", "application/json");
+      }
       processedData = JSON.stringify(data);
     }
-
+    
+    // Apply request interceptor if exists
+    if (this._requestInterceptor) {
+      processedData = this._requestInterceptor(processedData, this.headers) || processedData;
+    }
+    
     this.xhr.send(processedData);
   }
 
-  // GET request
+  // GET request with better query parameter handling
   async get(url, params = null) {
-    let query = params ? "?" + new URLSearchParams(params).toString() : "";
-    this._prepareRequest("GET", url + query);
+    let fullURL = url;
+    if (params) {
+      const queryString = this._buildQueryString(params);
+      fullURL += (url.includes('?') ? '&' : '?') + queryString;
+    }
+    
+    this._prepareRequest("GET", fullURL);
     return await this._executeRequest();
   }
 
+  // Build query string from object
+  _buildQueryString(params) {
+    if (typeof params === 'string') return params;
+    
+    const searchParams = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (Array.isArray(value)) {
+        value.forEach(v => searchParams.append(key, String(v)));
+      } else if (value !== null && value !== undefined) {
+        searchParams.append(key, String(value));
+      }
+    });
+    return searchParams.toString();
+  }
+
   // POST request
-  async post(url, data = {}) {
+  async post(url, data = null) {
     this._prepareRequest("POST", url);
     return await this._executeRequest(data);
   }
 
   // PUT request
-  async put(url, data = {}) {
+  async put(url, data = null) {
     this._prepareRequest("PUT", url);
     return await this._executeRequest(data);
   }
@@ -151,49 +281,72 @@ class FetchX {
   }
 
   // PATCH request
-  async patch(url, data = {}) {
+  async patch(url, data = null) {
     this._prepareRequest("PATCH", url);
     return await this._executeRequest(data);
+  }
+
+  // HEAD request
+  async head(url) {
+    this._prepareRequest("HEAD", url);
+    return await this._executeRequest();
+  }
+
+  // OPTIONS request
+  async options(url) {
+    this._prepareRequest("OPTIONS", url);
+    return await this._executeRequest();
   }
 
   // Unified request execution
   _executeRequest(data = null) {
     return new Promise((resolve, reject) => {
       this._handleResponse(resolve, reject);
-      if (data !== null) {
-        this._sendData(data);
-      } else {
-        this.xhr.send();
-      }
+      this._sendData(data);
     });
   }
 
-  // File upload with progress
-  async upload(url, formData, onProgress = null) {
-    this._prepareRequest("POST", url);
-
+  // File upload with progress and multiple file support
+  async upload(url, formData, options = {}) {
+    const { onProgress, onUploadProgress, method = 'POST' } = options;
+    
+    this._prepareRequest(method, url);
+    
     return new Promise((resolve, reject) => {
-      if (onProgress) {
+      // Upload progress
+      if (onProgress || onUploadProgress) {
         this.xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable)
-            onProgress(Math.round((e.loaded / e.total) * 100), e);
+          if (e.lengthComputable) {
+            const progress = Math.round((e.loaded / e.total) * 100);
+            const progressData = { progress, loaded: e.loaded, total: e.total, event: e };
+            
+            if (onProgress) onProgress(progress, progressData);
+            if (onUploadProgress) onUploadProgress(progressData);
+          }
         };
       }
+      
       this._handleResponse(resolve, reject);
       this.xhr.send(formData);
     });
   }
 
-  // Static helper methods
+  // Generic request method for custom HTTP methods
+  async request(method, url, data = null) {
+    this._prepareRequest(method, url);
+    return await this._executeRequest(data);
+  }
+
+  // Static helper methods (create new instances)
   static async get(url, params = null) {
     return await new FetchX().get(url, params);
   }
 
-  static async post(url, data = {}) {
+  static async post(url, data = null) {
     return await new FetchX().post(url, data);
   }
 
-  static async put(url, data = {}) {
+  static async put(url, data = null) {
     return await new FetchX().put(url, data);
   }
 
@@ -201,12 +354,42 @@ class FetchX {
     return await new FetchX().delete(url, data);
   }
 
-  static async patch(url, data = {}) {
+  static async patch(url, data = null) {
     return await new FetchX().patch(url, data);
+  }
+
+  static async head(url) {
+    return await new FetchX().head(url);
+  }
+
+  static async options(url) {
+    return await new FetchX().options(url);
+  }
+
+  // Create instance with base configuration
+  static create(config = {}) {
+    const instance = new FetchX();
+    
+    if (config.baseURL) instance.baseURL(config.baseURL);
+    if (config.timeout) instance.timeout(config.timeout);
+    if (config.headers) instance.header(config.headers);
+    if (config.responseType) instance.responseType(config.responseType);
+    if (config.requestInterceptor) instance.interceptRequest(config.requestInterceptor);
+    if (config.responseInterceptor) instance.interceptResponse(config.responseInterceptor);
+    
+    return instance;
   }
 }
 
 // Global helper function
-function fetchx() {
-  return new FetchX();
+function fetchx(config = {}) {
+  return Object.keys(config).length > 0 ? FetchX.create(config) : new FetchX();
+}
+
+// Export for different module systems
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { FetchX, fetchx };
+} else if (typeof window !== 'undefined') {
+  window.FetchX = FetchX;
+  window.fetchx = fetchx;
 }
