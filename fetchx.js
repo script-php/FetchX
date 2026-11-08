@@ -1,412 +1,268 @@
 /**
  * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
- * Version: 0.0.7
+ * Version: 0.0.8
  */
 
-class FetchX {
-  constructor() {
-    this.xhr = null;
-    this.headers = {
-      Accept: "application/json, text/html",
-      "X-Requested-With": "XMLHttpRequest",
-    };
-    this._timeout = 0; // 0 means no timeout
-    this._responseType = ""; // 'json', 'text', 'blob', 'arraybuffer', 'document'
-    this.aborted = false;
-  }
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else if (typeof define === 'function' && define.amd) define([], () => api);
+  else if (root) { root.FetchX = api.FetchX; root.fetchx = api.fetchx; }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
 
-  // Set request headers (chain-friendly)
-  header(key, value) {
-    if (typeof key === 'object') {
-      // Support object of headers: .header({ 'Content-Type': 'application/json', 'Authorization': 'Bearer token' })
-      Object.assign(this.headers, key);
-    } else {
-      this.headers[key] = value;
+  const TYPES = ['', 'json', 'text', 'blob', 'arraybuffer', 'document'];
+  const isBody = value => value !== null && value !== undefined;
+  const isPlainObject = value => Object.prototype.toString.call(value) === '[object Object]';
+  const getHeader = (headers, name) => Object.keys(headers).find(k => k.toLowerCase() === name.toLowerCase());
+  const setHeader = (headers, name, value) => {
+    const old = getHeader(headers, name);
+    if (old && old !== name) delete headers[old];
+    headers[name] = value;
+  };
+  const removeHeader = (headers, name) => {
+    const old = getHeader(headers, name);
+    if (old) delete headers[old];
+  };
+  const parseHeaders = raw => {
+    const out = {};
+    String(raw || '').trim().split(/\r?\n/).forEach(line => {
+      const colon = line.indexOf(':');
+      if (colon > 0) out[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
+    });
+    return out;
+  };
+  const queryString = params => {
+    if (typeof params === 'string') return params.replace(/^\?/, '');
+    const query = new URLSearchParams();
+    if (params instanceof URLSearchParams) return params.toString();
+    for (const [key, value] of Object.entries(params || {})) {
+      if (Array.isArray(value)) value.forEach(v => { if (v != null) query.append(key, String(v)); });
+      else if (value != null) query.append(key, String(value));
     }
-    return this;
-  }
+    return query.toString();
+  };
 
-  // Set timeout in milliseconds
-  timeout(ms) {
-    this._timeout = Math.max(0, parseInt(ms) || 0);
-    return this;
-  }
-
-  // Set expected response type
-  responseType(type) {
-    const validTypes = ['', 'json', 'text', 'blob', 'arraybuffer', 'document'];
-    this._responseType = validTypes.includes(type) ? type : '';
-    return this;
-  }
-
-  // Set base URL for all requests
-  baseURL(url) {
-    this._baseURL = url.replace(/\/$/, ''); // Remove trailing slash
-    return this;
-  }
-
-  // Add request interceptor
-  interceptRequest(fn) {
-    this._requestInterceptor = fn;
-    return this;
-  }
-
-  // Add response interceptor
-  interceptResponse(fn) {
-    this._responseInterceptor = fn;
-    return this;
-  }
-
-  // Abort current request
-  abort() {
-    this.aborted = true;
-    if (this.xhr) {
-      this.xhr.abort();
+  class FetchXError extends Error {
+    constructor(message, code, response = null, cause = null) {
+      super(message);
+      this.name = 'FetchXError';
+      this.code = code;
+      this.response = response;
+      this.status = response ? response.status : 0;
+      this.statusText = response ? response.statusText : message;
+      this.isNetworkError = code === 'ERR_NETWORK';
+      this.isCanceled = code === 'ERR_CANCELED';
+      if (cause) this.cause = cause;
     }
-    return this;
   }
 
-  // Handle response with better error handling and interceptors
-  _handleResponse(resolve, reject) {
-    this.xhr.onload = () => {
-      if (this.aborted) return;
+  class FetchX {
+    constructor() {
+      this.xhr = null; // Last started request; retained for legacy inspection.
+      this.headers = { Accept: 'application/json, text/html', 'X-Requested-With': 'XMLHttpRequest' };
+      this._timeout = 0;
+      this._responseType = '';
+      this._baseURL = '';
+      this._requestInterceptor = null;
+      this._responseInterceptor = null;
+      this._active = new Set();
+      this.aborted = false; // Legacy property; true after abort() until next request.
+    }
 
-      let responseData;
-      const contentType = this.xhr.getResponseHeader("Content-Type") || '';
-      
-      try {
-        // Handle different response types correctly
-        if (this._responseType === 'json') {
-          // When responseType is 'json', use xhr.response (browser handles JSON parsing)
-          responseData = this.xhr.response;
-        } else if (this._responseType === 'blob') {
-          responseData = this.xhr.response;
-        } else if (this._responseType === 'document') {
-          responseData = this.xhr.responseXML || this.xhr.response;
-        } else if (this._responseType === 'arraybuffer') {
-          responseData = this.xhr.response;
-        } else {
-          // For '' or 'text' responseType, we can use responseText
-          const rawText = this.xhr.responseText;
-          
-          // Auto-detect JSON and parse if no specific responseType is set
-          if (this._responseType === '' && contentType.includes('application/json') && rawText) {
-            try {
-              responseData = JSON.parse(rawText);
-            } catch (parseError) {
-              responseData = rawText; // Fallback to raw text if JSON parsing fails
+    header(key, value) {
+      if (key && typeof key === 'object') {
+        for (const [name, val] of Object.entries(key)) setHeader(this.headers, name, val);
+      } else if (typeof key === 'string') setHeader(this.headers, key, value);
+      return this;
+    }
+    timeout(ms) {
+      const n = Number(ms);
+      if (!Number.isFinite(n) || n < 0) throw new TypeError('Timeout must be a non-negative finite number');
+      this._timeout = Math.floor(n);
+      return this;
+    }
+    responseType(type) {
+      if (!TYPES.includes(type)) throw new TypeError('Invalid response type: ' + type);
+      this._responseType = type;
+      return this;
+    }
+    baseURL(url) {
+      if (typeof url !== 'string') throw new TypeError('baseURL must be a string');
+      this._baseURL = url.replace(/\/$/, '');
+      return this;
+    }
+    interceptRequest(fn) {
+      if (fn != null && typeof fn !== 'function') throw new TypeError('Interceptor must be a function');
+      this._requestInterceptor = fn;
+      return this;
+    }
+    interceptResponse(fn) {
+      if (fn != null && typeof fn !== 'function') throw new TypeError('Interceptor must be a function');
+      this._responseInterceptor = fn;
+      return this;
+    }
+    // Cancel every in-flight request belonging to this client.
+    abort() {
+      this.aborted = true;
+      for (const xhr of Array.from(this._active)) xhr.abort();
+      return this;
+    }
+    _buildURL(url) {
+      if (typeof url !== 'string' || !url) throw new TypeError('URL is required');
+      if (/^(?:[a-z][a-z\d+.-]*:)?\/\//i.test(url)) return url;
+      if (!this._baseURL) return url;
+      return this._baseURL + '/' + url.replace(/^\//, '');
+    }
+    _buildQueryString(params) { return queryString(params); }
+    _parseResponseHeaders(raw) { return parseHeaders(raw); }
+    _createError(response = null, message = null) {
+      return new FetchXError(message || (response ? 'HTTP ' + response.status : 'Network Error'), response ? 'ERR_HTTP' : 'ERR_NETWORK', response);
+    }
+
+    get(url, params = null, options = {}) {
+      const query = params == null ? '' : queryString(params);
+      if (query) {
+        const hashIndex = url.indexOf('#');
+        const hash = hashIndex < 0 ? '' : url.slice(hashIndex);
+        const path = hashIndex < 0 ? url : url.slice(0, hashIndex);
+        url = path + (path.includes('?') ? (/[?&]$/.test(path) ? '' : '&') : '?') + query + hash;
+      }
+      return this.request('GET', url, null, options);
+    }
+    post(url, data = null, options = {}) { return this.request('POST', url, data, options); }
+    put(url, data = null, options = {}) { return this.request('PUT', url, data, options); }
+    delete(url, data = null, options = {}) { return this.request('DELETE', url, data, options); }
+    patch(url, data = null, options = {}) { return this.request('PATCH', url, data, options); }
+    head(url, options = {}) { return this.request('HEAD', url, null, options); }
+    options(url, options = {}) { return this.request('OPTIONS', url, null, options); }
+    upload(url, formData, options = {}) {
+      const { method = 'POST', onProgress, onUploadProgress, ...rest } = options;
+      return this.request(method, url, formData, { ...rest, onProgress, onUploadProgress, multipart: true });
+    }
+
+    async request(method, url, data = null, options = {}) {
+      const verb = String(method).toUpperCase();
+      const fullURL = this._buildURL(url);
+      const headers = { ...this.headers };
+      if (options.headers) for (const [k, v] of Object.entries(options.headers)) setHeader(headers, k, v);
+      const config = { url: fullURL, method: verb, headers, data, timeout: options.timeout ?? this._timeout,
+        responseType: options.responseType ?? this._responseType };
+      if (!TYPES.includes(config.responseType)) throw new TypeError('Invalid response type');
+      if (!Number.isFinite(Number(config.timeout)) || Number(config.timeout) < 0) throw new TypeError('Invalid timeout');
+      // Backwards compatible interceptor signature: (data, headers, config).
+      // Returning undefined retains the original data; falsy values are respected.
+      if (this._requestInterceptor) {
+        const result = await this._requestInterceptor(config.data, config.headers, config);
+        if (result !== undefined) config.data = result;
+      }
+      if (options.signal?.aborted) throw new FetchXError('Request aborted', 'ERR_CANCELED');
+      const body = config.data;
+      const formData = typeof FormData !== 'undefined' && body instanceof FormData;
+      const urlParams = typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams;
+      const blob = typeof Blob !== 'undefined' && body instanceof Blob;
+      const binary = body instanceof ArrayBuffer || ArrayBuffer.isView(body);
+      if (formData || options.multipart) removeHeader(config.headers, 'Content-Type');
+      else if (isPlainObject(body) || Array.isArray(body)) {
+        if (!getHeader(config.headers, 'Content-Type')) setHeader(config.headers, 'Content-Type', 'application/json');
+      } else if (urlParams) {
+        if (!getHeader(config.headers, 'Content-Type')) setHeader(config.headers, 'Content-Type', 'application/x-www-form-urlencoded;charset=UTF-8');
+      } else if (typeof body === 'string' && !getHeader(config.headers, 'Content-Type')) {
+        setHeader(config.headers, 'Content-Type', 'text/plain;charset=UTF-8');
+      }
+      let payload = body;
+      if ((isPlainObject(body) || Array.isArray(body)) && !formData && !blob && !binary && !urlParams) {
+        const contentTypeKey = getHeader(config.headers, 'Content-Type');
+        const contentType = contentTypeKey ? String(config.headers[contentTypeKey]).toLowerCase() : '';
+        payload = contentType.includes('application/x-www-form-urlencoded') ? queryString(body) : JSON.stringify(body);
+      }
+      this.aborted = false;
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        this.xhr = xhr;
+        this._active.add(xhr);
+        let settled = false;
+        const signal = options.signal;
+        const onSignalAbort = () => xhr.abort();
+        const cleanup = () => {
+          this._active.delete(xhr);
+          if (signal) signal.removeEventListener('abort', onSignalAbort);
+        };
+        const fail = error => { if (settled) return; settled = true; cleanup(); reject(error); };
+        const succeed = value => { if (settled) return; settled = true; cleanup(); resolve(value); };
+        xhr.onload = async () => {
+          if (settled) return;
+          let response;
+          try {
+            const responseHeaders = parseHeaders(xhr.getAllResponseHeaders());
+            const contentType = (responseHeaders['content-type'] || '').toLowerCase();
+            let responseData;
+            if (verb === 'HEAD' || xhr.status === 204 || xhr.status === 205) responseData = null;
+            else if (['json', 'blob', 'arraybuffer', 'document'].includes(config.responseType)) {
+              responseData = xhr.response;
+              // Native XHR JSON parsing returns null for empty or invalid JSON.
+            } else {
+              const raw = xhr.responseText;
+              if (config.responseType === '' && /(?:^|\/)json(?:\s*;|$)|\+json(?:\s*;|$)/i.test(contentType)) {
+                responseData = raw === '' ? null : JSON.parse(raw);
+              } else responseData = raw;
             }
-          } else {
-            responseData = rawText;
-          }
-        }
-      } catch (e) {
-        // Final fallback - try to get any available response data
-        responseData = this.xhr.response || this.xhr.responseText || null;
-      }
-
-      const response = {
-        data: responseData,
-        status: this.xhr.status,
-        statusText: this.xhr.statusText,
-        headers: this._parseResponseHeaders(this.xhr.getAllResponseHeaders()),
-        config: {
-          url: this.xhr.responseURL || '',
-          method: this._currentMethod,
-          headers: { ...this.headers }
-        },
-        xhr: this.xhr,
-      };
-
-      if (this.xhr.status >= 200 && this.xhr.status < 300) {
-        // Apply response interceptor if exists
-        const finalResponse = this._responseInterceptor ? this._responseInterceptor(response) : response;
-        resolve(finalResponse);
-      } else {
-        const error = this._createError(response);
-        reject(error);
-      }
-    };
-
-    this.xhr.onerror = () => {
-      if (!this.aborted) {
-        reject(this._createError());
-      }
-    };
-
-    this.xhr.ontimeout = () => {
-      if (!this.aborted) {
-        reject(this._createError(null, 'Request timeout'));
-      }
-    };
-
-    this.xhr.onabort = () => {
-      if (this.aborted) {
-        reject(this._createError(null, 'Request aborted'));
-      }
-    };
-
-    if (this._timeout > 0) {
-      this.xhr.timeout = this._timeout;
-    }
-  }
-
-  // Parse response headers into object
-  _parseResponseHeaders(headerStr) {
-    const headers = {};
-    if (!headerStr) return headers;
-    
-    headerStr.split('\r\n').forEach(line => {
-      const [key, ...valueParts] = line.split(': ');
-      if (key && valueParts.length) {
-        headers[key.toLowerCase()] = valueParts.join(': ');
-      }
-    });
-    return headers;
-  }
-
-  // Create enhanced error object
-  _createError(response = null, message = null) {
-    const error = new Error(message || 'Network Error');
-    error.isNetworkError = true;
-    error.status = response?.status || this.xhr?.status || 0;
-    error.statusText = response?.statusText || this.xhr?.statusText || message || 'Network Error';
-    error.response = response;
-    return error;
-  }
-
-  // Build complete URL
-  _buildURL(url) {
-    if (!url) throw new Error('URL is required');
-    
-    // Return as-is if already absolute URL
-    if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('//')) {
-      return url;
-    }
-    
-    // Prepend base URL if available
-    if (this._baseURL) {
-      return `${this._baseURL}/${url.replace(/^\//, '')}`;
-    }
-    
-    return url;
-  }
-
-  // Prepare request with better error handling
-  _prepareRequest(method, url) {
-    this.aborted = false;
-    this._currentMethod = method.toUpperCase();
-    
-    const fullURL = this._buildURL(url);
-    
-    this.xhr = new XMLHttpRequest();
-    this.xhr.open(method, fullURL, true);
-    
-    if (this._responseType) {
-      this.xhr.responseType = this._responseType;
-    }
-    
-    // Set headers
-    Object.entries(this.headers).forEach(([key, value]) => {
-      if (value !== null && value !== undefined) {
-        this.xhr.setRequestHeader(key, String(value));
-      }
-    });
-  }
-
-  // Enhanced data sending with better content type handling
-  _sendData(data) {
-    if (data === null || data === undefined) {
-      this.xhr.send();
-      return;
-    }
-    
-    let processedData = data;
-    const hasContentType = this.headers["Content-Type"] || this.headers["content-type"];
-    
-    // Handle different data types
-    if (data instanceof FormData) {
-      // Let browser set Content-Type for FormData (with boundary)
-      processedData = data;
-    } else if (data instanceof Blob || data instanceof ArrayBuffer) {
-      processedData = data;
-    } else if (typeof data === 'string') {
-      // String data - send as-is, set text/plain if no content type
-      if (!hasContentType) {
-        this.xhr.setRequestHeader("Content-Type", "text/plain");
-      }
-      processedData = data;
-    } else if (typeof data === 'object' && data !== null) {
-      // Object data - JSON stringify and set application/json if no content type
-      if (!hasContentType) {
-        this.xhr.setRequestHeader("Content-Type", "application/json");
-      }
-      processedData = JSON.stringify(data);
-    }
-    
-    // Apply request interceptor if exists
-    if (this._requestInterceptor) {
-      processedData = this._requestInterceptor(processedData, this.headers) || processedData;
-    }
-    
-    this.xhr.send(processedData);
-  }
-
-  // GET request with better query parameter handling
-  async get(url, params = null) {
-    let fullURL = url;
-    if (params) {
-      const queryString = this._buildQueryString(params);
-      fullURL += (url.includes('?') ? '&' : '?') + queryString;
-    }
-    
-    this._prepareRequest("GET", fullURL);
-    return await this._executeRequest();
-  }
-
-  // Build query string from object
-  _buildQueryString(params) {
-    if (typeof params === 'string') return params;
-    
-    const searchParams = new URLSearchParams();
-    Object.entries(params).forEach(([key, value]) => {
-      if (Array.isArray(value)) {
-        value.forEach(v => searchParams.append(key, String(v)));
-      } else if (value !== null && value !== undefined) {
-        searchParams.append(key, String(value));
-      }
-    });
-    return searchParams.toString();
-  }
-
-  // POST request
-  async post(url, data = null) {
-    this._prepareRequest("POST", url);
-    return await this._executeRequest(data);
-  }
-
-  // PUT request
-  async put(url, data = null) {
-    this._prepareRequest("PUT", url);
-    return await this._executeRequest(data);
-  }
-
-  // DELETE request
-  async delete(url, data = null) {
-    this._prepareRequest("DELETE", url);
-    return await this._executeRequest(data);
-  }
-
-  // PATCH request
-  async patch(url, data = null) {
-    this._prepareRequest("PATCH", url);
-    return await this._executeRequest(data);
-  }
-
-  // HEAD request
-  async head(url) {
-    this._prepareRequest("HEAD", url);
-    return await this._executeRequest();
-  }
-
-  // OPTIONS request
-  async options(url) {
-    this._prepareRequest("OPTIONS", url);
-    return await this._executeRequest();
-  }
-
-  // Unified request execution
-  _executeRequest(data = null) {
-    return new Promise((resolve, reject) => {
-      this._handleResponse(resolve, reject);
-      this._sendData(data);
-    });
-  }
-
-  // File upload with progress and multiple file support
-  async upload(url, formData, options = {}) {
-    const { onProgress, onUploadProgress, method = 'POST' } = options;
-    
-    this._prepareRequest(method, url);
-    
-    return new Promise((resolve, reject) => {
-      // Upload progress
-      if (onProgress || onUploadProgress) {
-        this.xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            const progress = Math.round((e.loaded / e.total) * 100);
-            const progressData = { progress, loaded: e.loaded, total: e.total, event: e };
-            
-            if (onProgress) onProgress(progress, progressData);
-            if (onUploadProgress) onUploadProgress(progressData);
+            response = { data: responseData, status: xhr.status, statusText: xhr.statusText,
+              headers: responseHeaders, config: { url: xhr.responseURL || config.url, method: verb, headers: { ...config.headers } }, xhr };
+            if (xhr.status < 200 || xhr.status >= 300) return fail(new FetchXError('HTTP ' + xhr.status + (xhr.statusText ? ': ' + xhr.statusText : ''), 'ERR_HTTP', response));
+            const result = this._responseInterceptor ? await this._responseInterceptor(response) : response;
+            succeed(result);
+          } catch (error) {
+            fail(error instanceof SyntaxError ? new FetchXError('Invalid JSON response', 'ERR_PARSE', response, error) : error);
           }
         };
-      }
-      
-      this._handleResponse(resolve, reject);
-      this.xhr.send(formData);
-    });
+        xhr.onerror = () => fail(new FetchXError('Network Error', 'ERR_NETWORK'));
+        xhr.ontimeout = () => fail(new FetchXError('Request timeout', 'ERR_TIMEOUT'));
+        xhr.onabort = () => fail(new FetchXError('Request aborted', 'ERR_CANCELED'));
+        try {
+          xhr.open(verb, config.url, true);
+          if (config.responseType) xhr.responseType = config.responseType;
+          xhr.timeout = Number(config.timeout);
+          if (options.withCredentials !== undefined) xhr.withCredentials = !!options.withCredentials;
+          for (const [key, value] of Object.entries(config.headers)) {
+            if (value != null) xhr.setRequestHeader(key, String(value));
+          }
+          if (options.onProgress) xhr.onprogress = e => options.onProgress(e.lengthComputable ? Math.round(e.loaded / e.total * 100) : null, { loaded: e.loaded, total: e.total, event: e });
+          if (options.onUploadProgress || options.multipart && options.onProgress) {
+            xhr.upload.onprogress = e => {
+              const details = { progress: e.lengthComputable ? Math.round(e.loaded / e.total * 100) : null,
+                loaded: e.loaded, total: e.total, event: e };
+              if (options.multipart && options.onProgress) options.onProgress(details.progress, details);
+              if (options.onUploadProgress) options.onUploadProgress(details);
+            };
+          }
+          if (signal) {
+            signal.addEventListener('abort', onSignalAbort, { once: true });
+            if (signal.aborted) return xhr.abort();
+          }
+          xhr.send(isBody(payload) ? payload : null);
+        } catch (error) { fail(error); }
+      });
+    }
+
+    static create(config = {}) {
+      const client = new FetchX();
+      if (config.baseURL !== undefined) client.baseURL(config.baseURL);
+      if (config.timeout !== undefined) client.timeout(config.timeout);
+      if (config.headers) client.header(config.headers);
+      if (config.responseType !== undefined) client.responseType(config.responseType);
+      if (config.requestInterceptor) client.interceptRequest(config.requestInterceptor);
+      if (config.responseInterceptor) client.interceptResponse(config.responseInterceptor);
+      return client;
+    }
+    static get(url, params, options) { return new FetchX().get(url, params, options); }
+    static post(url, data, options) { return new FetchX().post(url, data, options); }
+    static put(url, data, options) { return new FetchX().put(url, data, options); }
+    static delete(url, data, options) { return new FetchX().delete(url, data, options); }
+    static patch(url, data, options) { return new FetchX().patch(url, data, options); }
+    static head(url, options) { return new FetchX().head(url, options); }
+    static options(url, options) { return new FetchX().options(url, options); }
   }
-
-  // Generic request method for custom HTTP methods
-  async request(method, url, data = null) {
-    this._prepareRequest(method, url);
-    return await this._executeRequest(data);
-  }
-
-  // Static helper methods (create new instances)
-  static async get(url, params = null) {
-    return await new FetchX().get(url, params);
-  }
-
-  static async post(url, data = null) {
-    return await new FetchX().post(url, data);
-  }
-
-  static async put(url, data = null) {
-    return await new FetchX().put(url, data);
-  }
-
-  static async delete(url, data = null) {
-    return await new FetchX().delete(url, data);
-  }
-
-  static async patch(url, data = null) {
-    return await new FetchX().patch(url, data);
-  }
-
-  static async head(url) {
-    return await new FetchX().head(url);
-  }
-
-  static async options(url) {
-    return await new FetchX().options(url);
-  }
-
-  // Create instance with base configuration
-  static create(config = {}) {
-    const instance = new FetchX();
-    
-    if (config.baseURL) instance.baseURL(config.baseURL);
-    if (config.timeout) instance.timeout(config.timeout);
-    if (config.headers) instance.header(config.headers);
-    if (config.responseType) instance.responseType(config.responseType);
-    if (config.requestInterceptor) instance.interceptRequest(config.requestInterceptor);
-    if (config.responseInterceptor) instance.interceptResponse(config.responseInterceptor);
-    
-    return instance;
-  }
-}
-
-// Global helper function
-function fetchx(config = {}) {
-  return Object.keys(config).length > 0 ? FetchX.create(config) : new FetchX();
-}
-
-// Export for different module systems
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { FetchX, fetchx };
-} else if (typeof window !== 'undefined') {
-  window.FetchX = FetchX;
-  window.fetchx = fetchx;
-}
+  function fetchx(config = {}) { return FetchX.create(config); }
+  return { FetchX, FetchXError, fetchx };
+});
