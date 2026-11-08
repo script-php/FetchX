@@ -1,6 +1,6 @@
 /**
  * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
- * Version: 0.0.16
+ * Version: 0.0.17
  */
 
 (function (root, factory) {
@@ -190,6 +190,7 @@
       }
       if (pendingCanceled || signal?.aborted) throw new FetchXError('Request aborted', 'ERR_CANCELED');
       // Interceptors receive mutable headers; reject unsafe values before XHR setup.
+      if (!config.headers || typeof config.headers !== 'object' || Array.isArray(config.headers)) throw new TypeError('Invalid request headers');
       for (const [k, v] of Object.entries(config.headers)) validateHeader(k, v);
       const body = config.data;
       const formData = typeof FormData !== 'undefined' && body instanceof FormData;
@@ -213,6 +214,11 @@
       if (pendingCanceled || signal?.aborted) throw new FetchXError('Request aborted', 'ERR_CANCELED');
       // Interceptors can mutate config; validate the final request settings.
       if (typeof config.url !== 'string' || !config.url) throw new TypeError('Invalid request URL');
+      // The request interceptor may change the method. Validate and consistently
+      // use that final method for XHR and the returned response metadata.
+      if (typeof config.method !== 'string' || !/^[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*$/.test(config.method)) throw new TypeError('Invalid request method');
+      config.method = config.method.toUpperCase();
+      if (!config.headers || typeof config.headers !== 'object' || Array.isArray(config.headers)) throw new TypeError('Invalid request headers');
       if (!TYPES.includes(config.responseType)) throw new TypeError('Invalid response type');
       if (!Number.isFinite(Number(config.timeout)) || Number(config.timeout) < 0 || Number(config.timeout) > 2147483647) throw new TypeError('Invalid timeout');
       for (const [k, v] of Object.entries(config.headers)) validateHeader(k, v);
@@ -250,7 +256,7 @@
             const contentType = (responseHeaders['content-type'] || '').toLowerCase();
             let responseData;
             const accepted = xhr.status !== 0 && !!validateStatus(xhr.status);
-            if (verb === 'HEAD' || [204, 205, 304].includes(xhr.status)) responseData = null;
+            if (config.method === 'HEAD' || [204, 205, 304].includes(xhr.status)) responseData = null;
             else if (config.responseType === 'json') {
               // Parse manually to distinguish invalid JSON from valid null.
               const raw = xhr.responseText;
@@ -264,7 +270,7 @@
               } else responseData = raw;
             }
             response = { data: responseData, status: xhr.status, statusText: xhr.statusText,
-              headers: responseHeaders, config: { url: xhr.responseURL || config.url, method: verb, headers: { ...config.headers } }, xhr };
+              headers: responseHeaders, config: { url: xhr.responseURL || config.url, method: config.method, headers: { ...config.headers } }, xhr };
             if (xhr.status === 0) return fail(new FetchXError('Network Error (status 0)', 'ERR_NETWORK', response));
             if (!accepted) return fail(new FetchXError('HTTP ' + xhr.status + (xhr.statusText ? ': ' + xhr.statusText : ''), 'ERR_HTTP', response));
             const result = this._responseInterceptor
@@ -276,7 +282,7 @@
           } catch (error) {
             if (error instanceof SyntaxError && !response) {
               response = { data: xhr.responseText, status: xhr.status, statusText: xhr.statusText,
-                headers: parseHeaders(xhr.getAllResponseHeaders()), config: { url: xhr.responseURL || config.url, method: verb, headers: { ...config.headers } }, xhr };
+                headers: parseHeaders(xhr.getAllResponseHeaders()), config: { url: xhr.responseURL || config.url, method: config.method, headers: { ...config.headers } }, xhr };
             }
             fail(error instanceof SyntaxError ? new FetchXError('Invalid JSON response', 'ERR_PARSE', response, error) : error);
           }
@@ -285,7 +291,7 @@
         xhr.ontimeout = () => fail(new FetchXError('Request timeout', 'ERR_TIMEOUT'));
         xhr.onabort = () => { if (responseCancel) responseCancel(new FetchXError('Request aborted', 'ERR_CANCELED')); fail(new FetchXError('Request aborted', 'ERR_CANCELED')); };
         try {
-          xhr.open(verb, config.url, true);
+          xhr.open(config.method, config.url, true);
           if (config.responseType && config.responseType !== 'json') xhr.responseType = config.responseType;
           xhr.timeout = Number(config.timeout);
           if (options.withCredentials !== undefined) xhr.withCredentials = !!options.withCredentials;
