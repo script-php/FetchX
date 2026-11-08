@@ -1,6 +1,6 @@
 /**
  * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
- * Version: 0.0.9
+ * Version: 0.0.10
  */
 
 (function (root, factory) {
@@ -68,6 +68,7 @@
       this._responseInterceptor = null;
       this._active = new Set();
       this._pending = new Set();
+      this._processing = new Set();
       this.aborted = false; // Legacy property; true after abort() until next request.
     }
 
@@ -108,6 +109,7 @@
       this.aborted = true;
       for (const pending of Array.from(this._pending)) pending.cancel();
       for (const xhr of Array.from(this._active)) xhr.abort();
+      for (const cancel of Array.from(this._processing)) cancel();
       return this;
     }
     _buildURL(url) {
@@ -199,9 +201,11 @@
         this._active.add(xhr);
         let settled = false;
         let responseCancel = null;
+        let processingCancel = null;
         const onSignalAbort = () => { if (responseCancel) responseCancel(new FetchXError('Request aborted', 'ERR_CANCELED')); xhr.abort(); };
         const cleanup = () => {
           this._active.delete(xhr);
+          if (processingCancel) this._processing.delete(processingCancel);
           xhr.onload = xhr.onerror = xhr.ontimeout = xhr.onabort = null;
           xhr.onprogress = null;
           if (xhr.upload) xhr.upload.onprogress = null;
@@ -211,6 +215,8 @@
         const succeed = value => { if (settled) return; settled = true; cleanup(); resolve(value); };
         xhr.onload = async () => {
           if (settled) return;
+          // HTTP transfer has finished; keep cancellation active while response interceptors run.
+          this._active.delete(xhr);
           let response;
           try {
             const responseHeaders = parseHeaders(xhr.getAllResponseHeaders());
@@ -220,13 +226,13 @@
             else if (config.responseType === 'json') {
               // Parse manually to distinguish invalid JSON from valid null.
               const raw = xhr.responseText;
-              responseData = raw === '' ? null : JSON.parse(raw);
+              responseData = raw === '' ? null : (xhr.status >= 400 ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : JSON.parse(raw));
             } else if (['blob', 'arraybuffer', 'document'].includes(config.responseType)) {
               responseData = xhr.response;
             } else {
               const raw = xhr.responseText;
               if (config.responseType === '' && /(?:^|\/)json(?:\s*;|$)|\+json(?:\s*;|$)/i.test(contentType)) {
-                responseData = raw === '' ? null : JSON.parse(raw);
+                responseData = raw === '' ? null : (xhr.status >= 400 ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : JSON.parse(raw));
               } else responseData = raw;
             }
             response = { data: responseData, status: xhr.status, statusText: xhr.statusText,
@@ -235,7 +241,7 @@
             const result = this._responseInterceptor
               ? await Promise.race([Promise.resolve().then(() => this._responseInterceptor(response)), new Promise((_, reject) => {
                   if (settled) reject(new FetchXError('Request aborted', 'ERR_CANCELED'));
-                  else responseCancel = reject;
+                  else { responseCancel = reject; processingCancel = () => reject(new FetchXError('Request aborted', 'ERR_CANCELED')); this._processing.add(processingCancel); }
                 })]) : response;
             succeed(result);
           } catch (error) {
@@ -253,13 +259,15 @@
           for (const [key, value] of Object.entries(config.headers)) {
             if (value != null) xhr.setRequestHeader(key, String(value));
           }
-          if (options.onProgress) xhr.onprogress = e => options.onProgress(e.lengthComputable ? Math.round(e.loaded / e.total * 100) : null, { loaded: e.loaded, total: e.total, event: e });
+          if (options.onProgress && !options.multipart) xhr.onprogress = e => { try { options.onProgress(e.lengthComputable && e.total ? Math.round(e.loaded / e.total * 100) : null, { loaded: e.loaded, total: e.total, event: e }); } catch (err) { fail(err); xhr.abort(); } };
           if (options.onUploadProgress || options.multipart && options.onProgress) {
             xhr.upload.onprogress = e => {
-              const details = { progress: e.lengthComputable ? Math.round(e.loaded / e.total * 100) : null,
+              const details = { progress: e.lengthComputable && e.total ? Math.round(e.loaded / e.total * 100) : null,
                 loaded: e.loaded, total: e.total, event: e };
-              if (options.multipart && options.onProgress) options.onProgress(details.progress, details);
-              if (options.onUploadProgress) options.onUploadProgress(details);
+              try {
+                if (options.multipart && options.onProgress) options.onProgress(details.progress, details);
+                if (options.onUploadProgress) options.onUploadProgress(details);
+              } catch (err) { fail(err); xhr.abort(); }
             };
           }
           if (signal) {
