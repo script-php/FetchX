@@ -1,6 +1,6 @@
 /**
  * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
- * Version: 0.0.8
+ * Version: 0.0.9
  */
 
 (function (root, factory) {
@@ -67,6 +67,7 @@
       this._requestInterceptor = null;
       this._responseInterceptor = null;
       this._active = new Set();
+      this._pending = new Set();
       this.aborted = false; // Legacy property; true after abort() until next request.
     }
 
@@ -105,6 +106,7 @@
     // Cancel every in-flight request belonging to this client.
     abort() {
       this.aborted = true;
+      for (const pending of Array.from(this._pending)) pending.cancel();
       for (const xhr of Array.from(this._active)) xhr.abort();
       return this;
     }
@@ -144,19 +146,30 @@
     async request(method, url, data = null, options = {}) {
       const verb = String(method).toUpperCase();
       const fullURL = this._buildURL(url);
+      if (!/^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]*$/.test(verb)) throw new TypeError('Invalid HTTP method');
       const headers = { ...this.headers };
       if (options.headers) for (const [k, v] of Object.entries(options.headers)) setHeader(headers, k, v);
       const config = { url: fullURL, method: verb, headers, data, timeout: options.timeout ?? this._timeout,
         responseType: options.responseType ?? this._responseType };
       if (!TYPES.includes(config.responseType)) throw new TypeError('Invalid response type');
       if (!Number.isFinite(Number(config.timeout)) || Number(config.timeout) < 0) throw new TypeError('Invalid timeout');
+      const signal = options.signal;
+      if (signal?.aborted) throw new FetchXError('Request aborted', 'ERR_CANCELED');
+      let pendingCanceled = false;
+      let pendingReject;
+      const pending = { cancel: () => { pendingCanceled = true; pendingReject?.(new FetchXError('Request aborted', 'ERR_CANCELED')); } };
+      this._pending.add(pending);
+      const pendingAbort = () => pending.cancel();
+      signal?.addEventListener('abort', pendingAbort, { once: true });
+      const cancellation = new Promise((_, reject) => { pendingReject = reject; if (pendingCanceled) pending.cancel(); });
+      try {
       // Backwards compatible interceptor signature: (data, headers, config).
       // Returning undefined retains the original data; falsy values are respected.
       if (this._requestInterceptor) {
-        const result = await this._requestInterceptor(config.data, config.headers, config);
+        const result = await Promise.race([Promise.resolve().then(() => this._requestInterceptor(config.data, config.headers, config)), cancellation]);
         if (result !== undefined) config.data = result;
       }
-      if (options.signal?.aborted) throw new FetchXError('Request aborted', 'ERR_CANCELED');
+      if (pendingCanceled || signal?.aborted) throw new FetchXError('Request aborted', 'ERR_CANCELED');
       const body = config.data;
       const formData = typeof FormData !== 'undefined' && body instanceof FormData;
       const urlParams = typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams;
@@ -176,16 +189,22 @@
         const contentType = contentTypeKey ? String(config.headers[contentTypeKey]).toLowerCase() : '';
         payload = contentType.includes('application/x-www-form-urlencoded') ? queryString(body) : JSON.stringify(body);
       }
+      if (pendingCanceled || signal?.aborted) throw new FetchXError('Request aborted', 'ERR_CANCELED');
+      this._pending.delete(pending);
+      signal?.removeEventListener('abort', pendingAbort);
       this.aborted = false;
-      return new Promise((resolve, reject) => {
+      return await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         this.xhr = xhr;
         this._active.add(xhr);
         let settled = false;
-        const signal = options.signal;
-        const onSignalAbort = () => xhr.abort();
+        let responseCancel = null;
+        const onSignalAbort = () => { if (responseCancel) responseCancel(new FetchXError('Request aborted', 'ERR_CANCELED')); xhr.abort(); };
         const cleanup = () => {
           this._active.delete(xhr);
+          xhr.onload = xhr.onerror = xhr.ontimeout = xhr.onabort = null;
+          xhr.onprogress = null;
+          if (xhr.upload) xhr.upload.onprogress = null;
           if (signal) signal.removeEventListener('abort', onSignalAbort);
         };
         const fail = error => { if (settled) return; settled = true; cleanup(); reject(error); };
@@ -198,9 +217,12 @@
             const contentType = (responseHeaders['content-type'] || '').toLowerCase();
             let responseData;
             if (verb === 'HEAD' || xhr.status === 204 || xhr.status === 205) responseData = null;
-            else if (['json', 'blob', 'arraybuffer', 'document'].includes(config.responseType)) {
+            else if (config.responseType === 'json') {
+              // Parse manually to distinguish invalid JSON from valid null.
+              const raw = xhr.responseText;
+              responseData = raw === '' ? null : JSON.parse(raw);
+            } else if (['blob', 'arraybuffer', 'document'].includes(config.responseType)) {
               responseData = xhr.response;
-              // Native XHR JSON parsing returns null for empty or invalid JSON.
             } else {
               const raw = xhr.responseText;
               if (config.responseType === '' && /(?:^|\/)json(?:\s*;|$)|\+json(?:\s*;|$)/i.test(contentType)) {
@@ -210,7 +232,11 @@
             response = { data: responseData, status: xhr.status, statusText: xhr.statusText,
               headers: responseHeaders, config: { url: xhr.responseURL || config.url, method: verb, headers: { ...config.headers } }, xhr };
             if (xhr.status < 200 || xhr.status >= 300) return fail(new FetchXError('HTTP ' + xhr.status + (xhr.statusText ? ': ' + xhr.statusText : ''), 'ERR_HTTP', response));
-            const result = this._responseInterceptor ? await this._responseInterceptor(response) : response;
+            const result = this._responseInterceptor
+              ? await Promise.race([Promise.resolve().then(() => this._responseInterceptor(response)), new Promise((_, reject) => {
+                  if (settled) reject(new FetchXError('Request aborted', 'ERR_CANCELED'));
+                  else responseCancel = reject;
+                })]) : response;
             succeed(result);
           } catch (error) {
             fail(error instanceof SyntaxError ? new FetchXError('Invalid JSON response', 'ERR_PARSE', response, error) : error);
@@ -218,10 +244,10 @@
         };
         xhr.onerror = () => fail(new FetchXError('Network Error', 'ERR_NETWORK'));
         xhr.ontimeout = () => fail(new FetchXError('Request timeout', 'ERR_TIMEOUT'));
-        xhr.onabort = () => fail(new FetchXError('Request aborted', 'ERR_CANCELED'));
+        xhr.onabort = () => { if (responseCancel) responseCancel(new FetchXError('Request aborted', 'ERR_CANCELED')); fail(new FetchXError('Request aborted', 'ERR_CANCELED')); };
         try {
           xhr.open(verb, config.url, true);
-          if (config.responseType) xhr.responseType = config.responseType;
+          if (config.responseType && config.responseType !== 'json') xhr.responseType = config.responseType;
           xhr.timeout = Number(config.timeout);
           if (options.withCredentials !== undefined) xhr.withCredentials = !!options.withCredentials;
           for (const [key, value] of Object.entries(config.headers)) {
@@ -243,6 +269,10 @@
           xhr.send(isBody(payload) ? payload : null);
         } catch (error) { fail(error); }
       });
+      } finally {
+        this._pending.delete(pending);
+        signal?.removeEventListener('abort', pendingAbort);
+      }
     }
 
     static create(config = {}) {
@@ -255,6 +285,8 @@
       if (config.responseInterceptor) client.interceptResponse(config.responseInterceptor);
       return client;
     }
+    static upload(url, formData, options) { return new FetchX().upload(url, formData, options); }
+    static request(method, url, data, options) { return new FetchX().request(method, url, data, options); }
     static get(url, params, options) { return new FetchX().get(url, params, options); }
     static post(url, data, options) { return new FetchX().post(url, data, options); }
     static put(url, data, options) { return new FetchX().put(url, data, options); }
