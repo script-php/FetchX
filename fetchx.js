@@ -1,6 +1,6 @@
 /**
  * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
- * Version: 0.0.13
+ * Version: 0.0.14
  */
 
 (function (root, factory) {
@@ -215,7 +215,7 @@
           if (xhr.upload) xhr.upload.onprogress = null;
           if (signal) signal.removeEventListener('abort', onSignalAbort);
         };
-        const cancelXHR = () => { const error = new FetchXError('Request aborted', 'ERR_CANCELED'); if (responseCancel) responseCancel(error); try { xhr.abort(); } finally { fail(error); } };
+        const cancelXHR = () => { const error = new FetchXError('Request aborted', 'ERR_CANCELED'); if (responseCancel) responseCancel(error); try { if (this._active.has(xhr)) xhr.abort(); } finally { fail(error); } };
         this._cancelActive.set(xhr, cancelXHR);
         const fail = error => { if (settled) return; settled = true; cleanup(); reject(error); };
         const succeed = value => { if (settled) return; settled = true; cleanup(); resolve(value); };
@@ -228,23 +228,24 @@
             const responseHeaders = parseHeaders(xhr.getAllResponseHeaders());
             const contentType = (responseHeaders['content-type'] || '').toLowerCase();
             let responseData;
+            const accepted = xhr.status !== 0 && !!validateStatus(xhr.status);
             if (verb === 'HEAD' || [204, 205, 304].includes(xhr.status)) responseData = null;
             else if (config.responseType === 'json') {
               // Parse manually to distinguish invalid JSON from valid null.
               const raw = xhr.responseText;
-              responseData = raw.trim() === '' ? null : (!validateStatus(xhr.status) ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : JSON.parse(raw));
+              responseData = raw.trim() === '' ? null : (!accepted ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : JSON.parse(raw));
             } else if (['blob', 'arraybuffer', 'document'].includes(config.responseType)) {
               responseData = xhr.response;
             } else {
               const raw = xhr.responseText;
               if (config.responseType === '' && /^(?:application\/json|[^;]+\+json)(?:\s*;|$)/i.test(contentType)) {
-                responseData = raw.trim() === '' ? null : (!validateStatus(xhr.status) ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : JSON.parse(raw));
+                responseData = raw.trim() === '' ? null : (!accepted ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : JSON.parse(raw));
               } else responseData = raw;
             }
             response = { data: responseData, status: xhr.status, statusText: xhr.statusText,
               headers: responseHeaders, config: { url: xhr.responseURL || config.url, method: verb, headers: { ...config.headers } }, xhr };
             if (xhr.status === 0) return fail(new FetchXError('Network Error (status 0)', 'ERR_NETWORK', response));
-            if (!validateStatus(xhr.status)) return fail(new FetchXError('HTTP ' + xhr.status + (xhr.statusText ? ': ' + xhr.statusText : ''), 'ERR_HTTP', response));
+            if (!accepted) return fail(new FetchXError('HTTP ' + xhr.status + (xhr.statusText ? ': ' + xhr.statusText : ''), 'ERR_HTTP', response));
             const result = this._responseInterceptor
               ? await Promise.race([Promise.resolve().then(() => this._responseInterceptor(response)), new Promise((_, reject) => {
                   if (settled) reject(new FetchXError('Request aborted', 'ERR_CANCELED'));
@@ -252,6 +253,10 @@
                 })]) : response;
             succeed(result);
           } catch (error) {
+            if (error instanceof SyntaxError && !response) {
+              response = { data: xhr.responseText, status: xhr.status, statusText: xhr.statusText,
+                headers: parseHeaders(xhr.getAllResponseHeaders()), config: { url: xhr.responseURL || config.url, method: verb, headers: { ...config.headers } }, xhr };
+            }
             fail(error instanceof SyntaxError ? new FetchXError('Invalid JSON response', 'ERR_PARSE', response, error) : error);
           }
         };
