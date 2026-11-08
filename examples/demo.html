@@ -144,10 +144,13 @@ formData.append('file', fileInput.files[0]);
 await fetchx().upload(
   'https://httpbin.org/post', 
   formData, 
-  (progress) => {
-    // Update progress bar
-    progressBar.style.width = progress + '%';
-    progressBar.textContent = progress + '%';
+  {
+    onProgress: (progress) => {
+      if (progress !== null) {
+        progressBar.style.width = progress + '%';
+        progressBar.textContent = progress + '%';
+      }
+    }
   }
 );</pre>
     </div>
@@ -193,7 +196,7 @@ await fetchx().upload(
     // Helper function to display results
     function displayResult(elementId, data, isError = false) {
       const element = document.getElementById(elementId);
-      element.innerHTML = JSON.stringify(data, null, 2);
+      element.textContent = JSON.stringify(data instanceof Error ? { name: data.name, message: data.message, code: data.code, status: data.status } : data, null, 2);
       if (isError) {
         element.classList.add('error');
       } else {
@@ -275,9 +278,13 @@ await fetchx().upload(
         const response = await fetchx().upload(
           'https://httpbin.org/post', 
           formData, 
-          (progress) => {
-            progressBar.style.width = progress + '%';
-            progressBar.textContent = progress + '%';
+          {
+            onProgress: (progress) => {
+              if (progress !== null) {
+                progressBar.style.width = `${progress}%`;
+                progressBar.textContent = `${progress}%`;
+              }
+            }
           }
         );
         

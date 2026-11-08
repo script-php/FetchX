@@ -1,6 +1,6 @@
 /**
  * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
- * Version: 0.0.18
+ * Version: 0.0.19
  */
 
 (function (root, factory) {
@@ -180,7 +180,11 @@
       this._pending.add(pending);
       const pendingAbort = () => pending.cancel();
       signal?.addEventListener('abort', pendingAbort, { once: true });
-      const cancellation = new Promise((_, reject) => { pendingReject = reject; if (pendingCanceled) pending.cancel(); });
+      // A cancellation promise is only needed while awaiting an asynchronous interceptor.
+      // Creating one for every request caused unhandled rejections when abort() was
+      // called after the interceptor phase had already finished.
+      const cancellation = this._requestInterceptor ? new Promise((_, reject) => { pendingReject = reject; if (pendingCanceled) pending.cancel(); }) : null;
+      if (cancellation) cancellation.catch(() => {});
       try {
       // Backwards compatible interceptor signature: (data, headers, config).
       // Returning undefined retains the original data; falsy values are respected.

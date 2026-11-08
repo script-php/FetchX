@@ -149,10 +149,12 @@
         }
 
         function updateProgress(progress, data = {}) {
-            console.log('Updating progress UI:', progress, data); // Debug log
+            if (progress === null) {
+                progressText.textContent = `${formatBytes(data.loaded || 0)} uploaded (total unknown)`;
+                return;
+            }
             progressFill.style.width = `${progress}%`;
             progressText.textContent = `${progress}% (${formatBytes(data.loaded || 0)} / ${formatBytes(data.total || 0)})`;
-            logMessage(`Upload progress: ${progress}%`);
         }
 
         function formatBytes(bytes) {
@@ -188,11 +190,13 @@
         });
 
         function updateFileDisplay() {
+            const message = uploadArea.querySelector('p');
             if (selectedFiles.length > 0) {
-                uploadArea.innerHTML = `<p>Selected ${selectedFiles.length} file(s): ${selectedFiles.map(f => f.name).join(', ')}</p>`;
+                message.textContent = `Selected ${selectedFiles.length} file(s): ` +
+                    selectedFiles.map(file => file.name).join(', ');
                 uploadBtn.disabled = false;
             } else {
-                uploadArea.innerHTML = '<p>Click here or drag & drop files to upload</p>';
+                message.textContent = 'Click here or drag & drop files to upload';
                 uploadBtn.disabled = true;
             }
         }

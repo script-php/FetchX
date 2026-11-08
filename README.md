@@ -1,300 +1,437 @@
 # FetchX
 
-FetchX is a lightweight, chainable HTTP client for the browser built on top of XMLHttpRequest that provides a clean, intuitive API for making AJAX requests.
+**FetchX v0.0.19** is a lightweight, dependency-free, Promise-based HTTP client for browsers. It uses the native `XMLHttpRequest` API, offering a familiar, fetch-like interface while retaining XHR features such as upload progress, timeouts, and request cancellation.
 
 ## Features
 
-- **Chainable API** - Use method chaining for a cleaner request configuration
-- **Promise-based** - Modern promise-based interface for handling responses
-- **Request/Response Handling** - Automatic content-type detection and parsing
-- **Flexible Config** - Set headers, timeouts, and response types with ease
-- **Progress Tracking** - Built-in support for upload progress monitoring
-- **Request Abortion** - Easily cancel in-flight requests when needed
+- **Dependency-free:** No runtime packages or build step required for browser script usage.
+- **Promise-based API:** Use `async`/`await` or `.then()` / `.catch()`.
+- **Chainable configuration:** Set default headers, timeouts, response types, and base URLs.
+- **HTTP methods:** `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, and generic `request`.
+- **Automatic serialization:** JSON for objects/arrays; supports strings, `FormData`, `URLSearchParams`, `Blob`, and binary payloads.
+- **Response parsing:** Automatic JSON detection, plus explicit text, JSON, Blob, ArrayBuffer, and document responses.
+- **Progress callbacks:** Upload and download progress events.
+- **Cancellation:** `AbortController` signals and client-wide `.abort()`.
+- **Interceptors:** Synchronous or asynchronous request/response interceptors.
+- **Error metadata:** Consistent error codes for HTTP, network, timeout, cancellation, and parsing failures.
+- **Concurrent requests:** Multiple requests can share the same client instance.
 
 ## Installation
 
-Simply include the `fetchx.js` file in your project:
+Download `fetchx.js` and include it in your page:
 
 ```html
-<script src="path/to/fetchx.js"></script>
+<script src="/js/fetchx.js"></script>
 ```
 
-## Basic Usage
+The browser script exposes `FetchX` and `fetchx` globally. It also supports CommonJS and AMD loading. **This is not an ES module with named `import` exports.**
+
+## Basic usage
 
 ```javascript
-// Make a simple GET request
-fetchx()
-  .get('https://api.example.com/users')
-  .then(response => {
-    console.log(response.data);
-  })
-  .catch(error => {
-    console.error('Request failed:', error);
-  });
+const api = fetchx();
+
+try {
+  const response = await api.get('/api/users');
+  console.log(response.data);
+} catch (error) {
+  console.error(error.code, error.message);
+}
 ```
 
-## API Reference
-
-### Creating a FetchX Instance
+Or with Promises:
 
 ```javascript
-// Create a new instance
-const request = fetchx();
-
-// Or create a new instance directly
-const request = new FetchX();
+fetchx().get('/api/users')
+  .then(response => console.log(response.data))
+  .catch(error => console.error(error));
 ```
 
-### Request Methods
-
-#### GET Request
+## Creating and configuring a client
 
 ```javascript
-// Simple GET
-fetchx().get('https://api.example.com/users');
-
-// GET with query parameters
-fetchx().get('https://api.example.com/users', { page: 1, limit: 10 });
-```
-
-#### POST Request
-
-```javascript
-// POST with JSON data
-fetchx().post('https://api.example.com/users', {
-  name: 'John Doe',
-  email: 'john@example.com'
+const api = fetchx({
+  baseURL: 'https://api.example.com',
+  timeout: 10000,
+  headers: { Authorization: 'Bearer YOUR_TOKEN' },
+  responseType: '' // Auto-detect JSON; default behavior
 });
 
-// POST with FormData
-const formData = new FormData();
-formData.append('name', 'John Doe');
-formData.append('email', 'john@example.com');
-fetchx().post('https://api.example.com/users', formData);
+// Equivalent construction:
+const otherApi = FetchX.create({ baseURL: 'https://api.example.com' });
+
+// Or configure a new instance fluently:
+const client = new FetchX()
+  .baseURL('https://api.example.com')
+  .timeout(10000)
+  .header('Accept', 'application/json');
 ```
 
-#### PUT Request
+Configuration methods return the client instance and affect subsequent requests made with that instance. You can also supply per-request options.
+
+### Available chainable methods
+
+| Method | Purpose |
+| --- | --- |
+| `.header(name, value)` | Set a default request header. |
+| `.header({ name: value })` | Set multiple default headers. |
+| `.timeout(milliseconds)` | Set the default XHR timeout; `0` disables it. |
+| `.responseType(type)` | Set the default response type. |
+| `.baseURL(url)` | Prefix relative request URLs. |
+| `.interceptRequest(fn)` | Set a request interceptor. |
+| `.interceptResponse(fn)` | Set a response interceptor. |
+| `.abort()` | Cancel outstanding requests belonging to the client. |
+
+## HTTP methods
 
 ```javascript
-fetchx().put('https://api.example.com/users/123', {
-  name: 'John Updated',
-  email: 'john.updated@example.com'
+const api = fetchx({ baseURL: 'https://api.example.com' });
+
+// GET with query parameters, including array values
+await api.get('/users', { page: 1, tags: ['new', 'active'] });
+
+// POST JSON
+await api.post('/users', { name: 'Jane', email: 'jane@example.com' });
+
+// PUT and PATCH
+await api.put('/users/123', { name: 'Jane Smith' });
+await api.patch('/users/123', { active: true });
+
+// DELETE, optionally with a body
+await api.delete('/users/123');
+await api.delete('/users/123', { reason: 'requested' });
+
+// HEAD and OPTIONS
+await api.head('/users/123');
+await api.options('/users');
+
+// Any supported HTTP method
+await api.request('POST', '/events', { event: 'open' });
+```
+
+The general signature is `request(method, url, data = null, options = {})`.
+
+For `get`, the signature is `get(url, params = null, options = {})`; for `head` and `options`, it is `(url, options = {})`.
+
+## Request options
+
+Most HTTP methods accept an `options` object:
+
+```javascript
+const response = await api.get('/users', { page: 2 }, {
+  headers: { 'X-Test': 'example' },
+  timeout: 5000,
+  responseType: 'json',
+  signal: controller.signal,
+  withCredentials: false,
+  validateStatus: status => status >= 200 && status < 300,
+  onDownloadProgress: details => console.log(details.loaded)
 });
 ```
 
-#### PATCH Request
+| Option | Description |
+| --- | --- |
+| `headers` | Additional or overriding headers for this request. |
+| `timeout` | Per-request timeout in milliseconds. |
+| `responseType` | `''`, `'json'`, `'text'`, `'blob'`, `'arraybuffer'`, or `'document'`. |
+| `signal` | An `AbortSignal` used to cancel the request. |
+| `withCredentials` | Set XHR's `withCredentials` flag. |
+| `validateStatus` | Function that decides which HTTP statuses resolve successfully. |
+| `onUploadProgress` | Upload progress callback receiving a details object. |
+| `onDownloadProgress` | Download progress callback receiving a details object. |
+| `onProgress` | Legacy-style progress callback receiving `(percentage, details)` for normal downloads; used for upload progress with `.upload()`. |
+
+`validateStatus` defaults to accepting HTTP status codes from 200 through 299.
+
+### Headers and authentication
 
 ```javascript
-fetchx().patch('https://api.example.com/users/123', {
-  name: 'John Patched'
+const api = fetchx()
+  .header('Authorization', 'Bearer YOUR_TOKEN')
+  .header('Accept-Language', 'en-US');
+
+await api.get('/api/profile', null, {
+  headers: { 'X-Request-ID': 'example-123' }
 });
 ```
 
-#### DELETE Request
+Do not embed private API secrets in browser JavaScript. Use appropriate authentication and authorization on the server.
+
+### Timeouts
 
 ```javascript
-// Simple DELETE
-fetchx().delete('https://api.example.com/users/123');
-
-// DELETE with body
-fetchx().delete('https://api.example.com/users/123', {
-  reason: 'User requested account deletion'
-});
-```
-
-### Request Configuration
-
-#### Setting Headers
-
-```javascript
-fetchx()
-  .header('Authorization', 'Bearer token123')
-  .header('Accept-Language', 'en-US')
-  .get('https://api.example.com/users');
-```
-
-#### Setting Timeout
-
-```javascript
-fetchx()
-  .timeout(5000) // 5 seconds timeout
-  .get('https://api.example.com/users');
-```
-
-#### Setting Response Type
-
-```javascript
-// Get response as JSON (also automatic if Content-Type is application/json)
-fetchx()
-  .responseType('json')
-  .get('https://api.example.com/data');
-
-// Get response as text
-fetchx()
-  .responseType('text')
-  .get('https://api.example.com/textdata');
-
-// Get response as blob (for binary data like images)
-fetchx()
-  .responseType('blob')
-  .get('https://api.example.com/image.jpg');
-
-// Get response as XML document
-fetchx()
-  .responseType('document')
-  .get('https://api.example.com/data.xml');
-```
-
-### File Uploads
-
-```javascript
-const formData = new FormData();
-const fileInput = document.querySelector('input[type="file"]');
-formData.append('file', fileInput.files[0]);
-
-fetchx().upload(
-  'https://api.example.com/upload',
-  formData,
-  (progress, event) => {
-    console.log(`Upload progress: ${progress}%`);
-    // Update UI with upload progress
-    document.querySelector('.progress-bar').style.width = `${progress}%`;
+try {
+  await fetchx().timeout(5000).get('/api/slow');
+} catch (error) {
+  if (error.code === 'ERR_TIMEOUT') {
+    console.log('The request timed out');
   }
-).then(response => {
+}
+```
+
+### Response types
+
+```javascript
+const api = fetchx();
+
+const json = await api.get('/api/data'); // JSON auto-detected by Content-Type
+const text = await api.get('/api/message', null, { responseType: 'text' });
+const image = await api.get('/images/photo.jpg', null, { responseType: 'blob' });
+const bytes = await api.get('/files/data.bin', null, { responseType: 'arraybuffer' });
+const xml = await api.get('/files/data.xml', null, { responseType: 'document' });
+
+console.log(json.data, text.data, image.data, bytes.data, xml.data);
+```
+
+For `204`, `205`, `304`, and `HEAD` responses, FetchX returns `data: null`.
+
+## Request bodies
+
+```javascript
+// Plain object: automatically serialized as JSON
+await api.post('/api/users', { name: 'Jane' });
+
+// Text
+await api.post('/api/notes', 'Hello world');
+
+// URL-encoded form
+await api.post('/api/form', new URLSearchParams({ name: 'Jane' }));
+
+// Multipart form: browser sets the boundary automatically
+const form = new FormData();
+form.append('name', 'Jane');
+await api.post('/api/form', form);
+
+// Binary
+await api.post('/api/binary', new Uint8Array([1, 2, 3]).buffer);
+```
+
+When using `FormData`, FetchX removes an explicitly configured `Content-Type` header so the browser can set the correct multipart boundary.
+
+## File uploads and progress
+
+**Important v0.0.19 change:** `.upload()` takes an **options object** as its third argument, not a callback function.
+
+```html
+<input id="file" type="file">
+<progress id="upload-progress" max="100" value="0"></progress>
+```
+
+```javascript
+const input = document.querySelector('#file');
+const progressBar = document.querySelector('#upload-progress');
+
+async function uploadSelectedFile() {
+  const file = input.files[0];
+  if (!file) return;
+
+  const form = new FormData();
+  form.append('file', file);
+
+  const response = await fetchx().upload('/api/upload', form, {
+    onUploadProgress(details) {
+      if (details.progress !== null) {
+        progressBar.value = details.progress;
+      }
+      console.log('Uploaded bytes:', details.loaded);
+    }
+  });
+
   console.log('Upload complete:', response.data);
+}
+```
+
+Progress detail objects contain `progress` (percentage or `null`), `loaded`, `total`, and the native `event`. Browsers may not always provide a computable total.
+
+The older `onProgress` callback style is also available for `.upload()`:
+
+```javascript
+await fetchx().upload('/api/upload', form, {
+  onProgress(percentage, details) {
+    console.log(percentage, details.loaded);
+  }
 });
 ```
 
-### Aborting Requests
+## Downloads and progress
 
 ```javascript
-const request = fetchx();
+const response = await fetchx().get('/api/download', null, {
+  responseType: 'blob',
+  onDownloadProgress(details) {
+    console.log(details.loaded, details.total, details.progress);
+  }
+});
 
-// Start the request
-request.get('https://api.example.com/large-data');
-
-// Later, abort the request if needed
-setTimeout(() => {
-  request.abort();
-  console.log('Request aborted');
-}, 1000);
+const url = URL.createObjectURL(response.data);
+const link = document.createElement('a');
+link.href = url;
+link.download = 'download.bin';
+link.click();
+URL.revokeObjectURL(url);
 ```
 
-### Response Object
+## Canceling requests
 
-The response object contains:
+### Cancel one request with `AbortController`
+
+```javascript
+const controller = new AbortController();
+const promise = fetchx().get('/api/slow', null, {
+  signal: controller.signal
+});
+
+controller.abort();
+
+try {
+  await promise;
+} catch (error) {
+  if (error.code === 'ERR_CANCELED') {
+    console.log('Request canceled');
+  }
+}
+```
+
+### Cancel all requests on a client
+
+```javascript
+const api = fetchx();
+const first = api.get('/api/first');
+const second = api.get('/api/second');
+
+// Attach rejection handlers before aborting to avoid unhandled rejections.
+const outcomes = Promise.allSettled([first, second]);
+api.abort();
+console.log(await outcomes);
+
+// The client can be reused for subsequent requests.
+await api.get('/api/health');
+```
+
+`api.abort()` cancels the client's active and pending operations, including operations waiting in asynchronous interceptors.
+
+## Interceptors
+
+### Request interceptor
+
+A request interceptor receives `(data, headers, config)`. It may mutate `headers` or `config`. If it returns a value other than `undefined`, that value replaces the outgoing request data.
+
+```javascript
+const api = fetchx({ baseURL: '/api' });
+
+api.interceptRequest(async (data, headers, config) => {
+  headers['X-App-Version'] = '1.0';
+  return data;
+});
+
+await api.post('/events', { action: 'save' });
+```
+
+### Response interceptor
+
+A response interceptor receives the successful response object and can return a replacement value, synchronously or asynchronously:
+
+```javascript
+api.interceptResponse(response => response.data);
+
+const users = await api.get('/users'); // Returns response.data directly
+```
+
+Only one request interceptor and one response interceptor are stored per client; calling the corresponding setter again replaces the previous one. HTTP errors are rejected before the response interceptor runs.
+
+## Response object
+
+Successful requests normally resolve to:
 
 ```javascript
 {
-  data: /* parsed response data */,
-  status: /* HTTP status code (e.g., 200) */,
-  statusText: /* HTTP status text (e.g., "OK") */,
-  xhr: /* The original XMLHttpRequest object */
+  data: /* parsed body, text, Blob, etc. */,
+  status: 200,
+  statusText: 'OK',
+  headers: { /* lower-case response header names */ },
+  config: {
+    url: '/api/users',
+    method: 'GET',
+    headers: { /* request headers */ }
+  },
+  xhr: /* underlying XMLHttpRequest */
 }
 ```
 
-### Error Handling
+If you use a response interceptor that returns a different value, the resolved result is whatever that interceptor returns.
+
+## Error handling
+
+FetchX uses `FetchXError` for HTTP/network/timeout/cancellation/parsing failures, with these codes:
+
+| Error code | Meaning |
+| --- | --- |
+| `ERR_HTTP` | HTTP status rejected by `validateStatus`. |
+| `ERR_NETWORK` | Network failure, blocked request, or XHR status 0. |
+| `ERR_TIMEOUT` | XHR timeout. |
+| `ERR_CANCELED` | Request canceled. |
+| `ERR_PARSE` | Invalid JSON when JSON parsing was expected. |
 
 ```javascript
-fetchx()
-  .get('https://api.example.com/users')
-  .then(response => {
-    // Handle success
-  })
-  .catch(error => {
-    console.error('Status:', error.status);
-    console.error('Status Text:', error.statusText);
-    console.error('Response:', error.response);
-  });
-```
-
-## Advanced Examples
-
-### Complete Request with All Options
-
-```javascript
-fetchx()
-  .header('Authorization', 'Bearer token123')
-  .header('X-Custom-Header', 'Custom Value')
-  .timeout(10000)
-  .responseType('json')
-  .post('https://api.example.com/data', {
-    user: 'john',
-    action: 'update'
-  })
-  .then(response => {
-    console.log('Success:', response.data);
-  })
-  .catch(error => {
-    if (error.status === 0 && error.statusText === 'Request timeout') {
+try {
+  await fetchx().get('/api/users');
+} catch (error) {
+  switch (error.code) {
+    case 'ERR_HTTP':
+      console.error('HTTP status:', error.status);
+      console.error('Server response:', error.response?.data);
+      break;
+    case 'ERR_TIMEOUT':
       console.error('Request timed out');
-    } else {
-      console.error('Request failed:', error);
-    }
-  });
-```
-
-### Authentication Example
-
-```javascript
-function authenticateUser(credentials) {
-  return fetchx()
-    .post('https://api.example.com/login', credentials)
-    .then(response => {
-      // Store the token
-      localStorage.setItem('authToken', response.data.token);
-      return response.data;
-    });
-}
-
-function fetchProtectedResource() {
-  const token = localStorage.getItem('authToken');
-  
-  return fetchx()
-    .header('Authorization', `Bearer ${token}`)
-    .get('https://api.example.com/protected-resource');
+      break;
+    case 'ERR_CANCELED':
+      console.log('Request canceled');
+      break;
+    case 'ERR_PARSE':
+      console.error('Invalid JSON response');
+      break;
+    case 'ERR_NETWORK':
+      console.error('Network or CORS error');
+      break;
+    default:
+      console.error('Request setup or interceptor error:', error);
+  }
 }
 ```
 
-### Handling Different Response Types
+Invalid request configuration (for example, malformed headers or unsupported response types) can throw `TypeError` or `RangeError`. Exceptions raised by user callbacks/interceptors may propagate as their original error types.
+
+## CORS and credentials
+
+FetchX follows the browser's same-origin and CORS rules; it does not bypass them. Your API server must return the correct `Access-Control-Allow-*` headers when a cross-origin request is allowed. Custom headers or JSON requests can trigger a preflight `OPTIONS` request.
 
 ```javascript
-// Download an image
-fetchx()
-  .responseType('blob')
-  .get('https://example.com/image.jpg')
-  .then(response => {
-    const imageUrl = URL.createObjectURL(response.data);
-    document.getElementById('preview').src = imageUrl;
-  });
-
-// Get XML data
-fetchx()
-  .responseType('document')
-  .get('https://example.com/data.xml')
-  .then(response => {
-    const xmlDoc = response.data;
-    const items = xmlDoc.getElementsByTagName('item');
-    // Process XML elements
-  });
+await fetchx().get('https://api.example.com/account', null, {
+  withCredentials: true
+});
 ```
 
-## Browser Compatibility
+Credentialed cross-origin requests require the server to allow credentials and specify an explicit allowed origin. Use HTTPS for production traffic.
 
-FetchX works in all modern browsers that support XMLHttpRequest and Promises:
+## Browser compatibility and requirements
 
-- Chrome
-- Firefox
-- Safari
-- Edge
-- Opera
+FetchX uses modern JavaScript syntax and APIs including `Promise`, `async`/`await`, `Set`, `Map`, `URLSearchParams`, and optional chaining. It requires a browser that supports these features as well as `XMLHttpRequest`. Older browsers may require transpilation or polyfills; a Promise polyfill alone is not sufficient for every older browser.
 
-For older browsers, you may need to include a Promise polyfill.
+The v0.0.19 browser integration suite was reported passing **49/49 tests** in Chromium, Firefox, and iPhone Safari. Extended stress runs were also reported passing **10/10 checks** with **20,191 settled requests** in Chrome and iPhone Safari. These results are useful compatibility evidence, not a guarantee against all bugs or long-term memory leaks. Edge and Opera were not separately certified in those runs.
+
+## Notes for production
+
+- Deploy the tested v0.0.19 file without changing its behavior unexpectedly.
+- Handle `ERR_NETWORK`, `ERR_TIMEOUT`, and `ERR_CANCELED` appropriately in your UI.
+- Use server-side authentication/authorization and correct CORS policies.
+- Do not assume that a resolved HTTP response always contains JSON.
+- Consider a rollback strategy when replacing an existing HTTP client.
+- For memory-sensitive applications, monitor long-lived pages under actual workloads.
 
 ## License
 
-MIT
+MIT (as stated in the original project README; consult the repository's `LICENSE` file for the authoritative terms).
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions, bug reports, and pull requests are welcome.
