@@ -1,6 +1,6 @@
 /**
  * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
- * Version: 0.0.14
+ * Version: 0.0.15
  */
 
 (function (root, factory) {
@@ -149,16 +149,21 @@
     async request(method, url, data = null, options = {}) {
       const verb = String(method).toUpperCase();
       const fullURL = this._buildURL(url);
+      if (options == null || typeof options !== 'object') throw new TypeError('options must be an object');
       if (!/^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]*$/.test(verb)) throw new TypeError('Invalid HTTP method');
       const headers = { ...this.headers };
       if (options.headers) for (const [k, v] of Object.entries(options.headers)) setHeader(headers, k, v);
       const config = { url: fullURL, method: verb, headers, data, timeout: options.timeout ?? this._timeout,
         responseType: options.responseType ?? this._responseType };
       if (!TYPES.includes(config.responseType)) throw new TypeError('Invalid response type');
-      if (!Number.isFinite(Number(config.timeout)) || Number(config.timeout) < 0) throw new TypeError('Invalid timeout');
+      if (!Number.isFinite(Number(config.timeout)) || Number(config.timeout) < 0 || Number(config.timeout) > 2147483647) throw new TypeError('Invalid timeout');
       const validateStatus = options.validateStatus ?? (status => status >= 200 && status < 300);
       if (typeof validateStatus !== 'function') throw new TypeError('validateStatus must be a function');
       const signal = options.signal;
+      if (signal != null && (typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function')) throw new TypeError('signal must be an AbortSignal');
+      for (const name of ['onProgress', 'onUploadProgress', 'onDownloadProgress']) {
+        if (options[name] != null && typeof options[name] !== 'function') throw new TypeError(name + ' must be a function');
+      }
       if (signal?.aborted) throw new FetchXError('Request aborted', 'ERR_CANCELED');
       let pendingCanceled = false;
       let pendingReject;
