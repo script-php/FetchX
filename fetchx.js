@@ -1,6 +1,6 @@
 /**
  * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
- * Version: 0.0.15
+ * Version: 0.0.16
  */
 
 (function (root, factory) {
@@ -14,8 +14,14 @@
   const TYPES = ['', 'json', 'text', 'blob', 'arraybuffer', 'document'];
   const isBody = value => value !== null && value !== undefined;
   const isPlainObject = value => Object.prototype.toString.call(value) === '[object Object]';
+  const validHeaderName = name => typeof name === 'string' && /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name);
+  const validateHeader = (name, value) => {
+    if (!validHeaderName(name)) throw new TypeError('Invalid HTTP header name');
+    if (value != null && /[\r\n\0]/.test(String(value))) throw new TypeError('Invalid HTTP header value');
+  };
   const getHeader = (headers, name) => Object.keys(headers).find(k => k.toLowerCase() === name.toLowerCase());
   const setHeader = (headers, name, value) => {
+    validateHeader(name, value);
     const old = getHeader(headers, name);
     if (old && old !== name) delete headers[old];
     headers[name] = value;
@@ -82,6 +88,7 @@
     timeout(ms) {
       const n = Number(ms);
       if (!Number.isFinite(n) || n < 0) throw new TypeError('Timeout must be a non-negative finite number');
+      if (n > 2147483647) throw new RangeError('Timeout exceeds XMLHttpRequest limit');
       this._timeout = Math.floor(n);
       return this;
     }
@@ -153,6 +160,8 @@
       if (!/^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]*$/.test(verb)) throw new TypeError('Invalid HTTP method');
       const headers = { ...this.headers };
       if (options.headers) for (const [k, v] of Object.entries(options.headers)) setHeader(headers, k, v);
+      // Validate inherited headers as well: public .headers may have been mutated directly.
+      for (const [k, v] of Object.entries(headers)) validateHeader(k, v);
       const config = { url: fullURL, method: verb, headers, data, timeout: options.timeout ?? this._timeout,
         responseType: options.responseType ?? this._responseType };
       if (!TYPES.includes(config.responseType)) throw new TypeError('Invalid response type');
@@ -180,6 +189,8 @@
         if (result !== undefined) config.data = result;
       }
       if (pendingCanceled || signal?.aborted) throw new FetchXError('Request aborted', 'ERR_CANCELED');
+      // Interceptors receive mutable headers; reject unsafe values before XHR setup.
+      for (const [k, v] of Object.entries(config.headers)) validateHeader(k, v);
       const body = config.data;
       const formData = typeof FormData !== 'undefined' && body instanceof FormData;
       const urlParams = typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams;
@@ -200,6 +211,11 @@
         payload = contentType.includes('application/x-www-form-urlencoded') ? queryString(body) : JSON.stringify(body);
       }
       if (pendingCanceled || signal?.aborted) throw new FetchXError('Request aborted', 'ERR_CANCELED');
+      // Interceptors can mutate config; validate the final request settings.
+      if (typeof config.url !== 'string' || !config.url) throw new TypeError('Invalid request URL');
+      if (!TYPES.includes(config.responseType)) throw new TypeError('Invalid response type');
+      if (!Number.isFinite(Number(config.timeout)) || Number(config.timeout) < 0 || Number(config.timeout) > 2147483647) throw new TypeError('Invalid timeout');
+      for (const [k, v] of Object.entries(config.headers)) validateHeader(k, v);
       this._pending.delete(pending);
       signal?.removeEventListener('abort', pendingAbort);
       this.aborted = false;
