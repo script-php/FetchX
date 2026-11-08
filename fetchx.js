@@ -1,6 +1,6 @@
 /**
  * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
- * Version: 0.0.12
+ * Version: 0.0.13
  */
 
 (function (root, factory) {
@@ -69,6 +69,7 @@
       this._active = new Set();
       this._pending = new Set();
       this._processing = new Set();
+      this._cancelActive = new Map();
       this.aborted = false; // Legacy property; true after abort() until next request.
     }
 
@@ -108,13 +109,13 @@
     abort() {
       this.aborted = true;
       for (const pending of Array.from(this._pending)) pending.cancel();
-      for (const xhr of Array.from(this._active)) xhr.abort();
+      for (const cancel of Array.from(this._cancelActive.values())) cancel();
       for (const cancel of Array.from(this._processing)) cancel();
       return this;
     }
     _buildURL(url) {
       if (typeof url !== 'string' || !url) throw new TypeError('URL is required');
-      if (/^(?:[a-z][a-z\d+.-]*:)?\/\//i.test(url)) return url;
+      if (/^[a-z][a-z\d+.-]*:/i.test(url) || url.startsWith('//')) return url;
       if (!this._baseURL) return url;
       return this._baseURL + '/' + url.replace(/^\//, '');
     }
@@ -204,15 +205,18 @@
         let settled = false;
         let responseCancel = null;
         let processingCancel = null;
-        const onSignalAbort = () => { if (responseCancel) responseCancel(new FetchXError('Request aborted', 'ERR_CANCELED')); xhr.abort(); };
+        const onSignalAbort = () => cancelXHR();
         const cleanup = () => {
           this._active.delete(xhr);
+          this._cancelActive.delete(xhr);
           if (processingCancel) this._processing.delete(processingCancel);
           xhr.onload = xhr.onerror = xhr.ontimeout = xhr.onabort = null;
           xhr.onprogress = null;
           if (xhr.upload) xhr.upload.onprogress = null;
           if (signal) signal.removeEventListener('abort', onSignalAbort);
         };
+        const cancelXHR = () => { const error = new FetchXError('Request aborted', 'ERR_CANCELED'); if (responseCancel) responseCancel(error); try { xhr.abort(); } finally { fail(error); } };
+        this._cancelActive.set(xhr, cancelXHR);
         const fail = error => { if (settled) return; settled = true; cleanup(); reject(error); };
         const succeed = value => { if (settled) return; settled = true; cleanup(); resolve(value); };
         xhr.onload = async () => {
@@ -228,13 +232,13 @@
             else if (config.responseType === 'json') {
               // Parse manually to distinguish invalid JSON from valid null.
               const raw = xhr.responseText;
-              responseData = raw.trim() === '' ? null : (xhr.status >= 400 ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : JSON.parse(raw));
+              responseData = raw.trim() === '' ? null : (!validateStatus(xhr.status) ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : JSON.parse(raw));
             } else if (['blob', 'arraybuffer', 'document'].includes(config.responseType)) {
               responseData = xhr.response;
             } else {
               const raw = xhr.responseText;
               if (config.responseType === '' && /^(?:application\/json|[^;]+\+json)(?:\s*;|$)/i.test(contentType)) {
-                responseData = raw.trim() === '' ? null : (xhr.status >= 400 ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : JSON.parse(raw));
+                responseData = raw.trim() === '' ? null : (!validateStatus(xhr.status) ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : JSON.parse(raw));
               } else responseData = raw;
             }
             response = { data: responseData, status: xhr.status, statusText: xhr.statusText,
@@ -275,7 +279,7 @@
           }
           if (signal) {
             signal.addEventListener('abort', onSignalAbort, { once: true });
-            if (signal.aborted) return xhr.abort();
+            if (signal.aborted) return cancelXHR();
           }
           xhr.send(isBody(payload) ? payload : null);
         } catch (error) { fail(error); }
