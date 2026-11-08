@@ -1,6 +1,6 @@
 /**
  * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
- * Version: 0.0.10
+ * Version: 0.0.11
  */
 
 (function (root, factory) {
@@ -155,6 +155,8 @@
         responseType: options.responseType ?? this._responseType };
       if (!TYPES.includes(config.responseType)) throw new TypeError('Invalid response type');
       if (!Number.isFinite(Number(config.timeout)) || Number(config.timeout) < 0) throw new TypeError('Invalid timeout');
+      const validateStatus = options.validateStatus ?? (status => status >= 200 && status < 300);
+      if (typeof validateStatus !== 'function') throw new TypeError('validateStatus must be a function');
       const signal = options.signal;
       if (signal?.aborted) throw new FetchXError('Request aborted', 'ERR_CANCELED');
       let pendingCanceled = false;
@@ -231,13 +233,13 @@
               responseData = xhr.response;
             } else {
               const raw = xhr.responseText;
-              if (config.responseType === '' && /(?:^|\/)json(?:\s*;|$)|\+json(?:\s*;|$)/i.test(contentType)) {
+              if (config.responseType === '' && /^(?:application\/json|[^;]+\+json)(?:\s*;|$)/i.test(contentType)) {
                 responseData = raw === '' ? null : (xhr.status >= 400 ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : JSON.parse(raw));
               } else responseData = raw;
             }
             response = { data: responseData, status: xhr.status, statusText: xhr.statusText,
               headers: responseHeaders, config: { url: xhr.responseURL || config.url, method: verb, headers: { ...config.headers } }, xhr };
-            if (xhr.status < 200 || xhr.status >= 300) return fail(new FetchXError('HTTP ' + xhr.status + (xhr.statusText ? ': ' + xhr.statusText : ''), 'ERR_HTTP', response));
+            if (!validateStatus(xhr.status)) return fail(new FetchXError('HTTP ' + xhr.status + (xhr.statusText ? ': ' + xhr.statusText : ''), 'ERR_HTTP', response));
             const result = this._responseInterceptor
               ? await Promise.race([Promise.resolve().then(() => this._responseInterceptor(response)), new Promise((_, reject) => {
                   if (settled) reject(new FetchXError('Request aborted', 'ERR_CANCELED'));
@@ -259,7 +261,7 @@
           for (const [key, value] of Object.entries(config.headers)) {
             if (value != null) xhr.setRequestHeader(key, String(value));
           }
-          if (options.onProgress && !options.multipart) xhr.onprogress = e => { try { options.onProgress(e.lengthComputable && e.total ? Math.round(e.loaded / e.total * 100) : null, { loaded: e.loaded, total: e.total, event: e }); } catch (err) { fail(err); xhr.abort(); } };
+          if (options.onProgress && !options.multipart || options.onDownloadProgress) xhr.onprogress = e => { try { const details = { progress: e.lengthComputable && e.total ? Math.round(e.loaded / e.total * 100) : null, loaded: e.loaded, total: e.total, event: e }; if (options.onProgress && !options.multipart) options.onProgress(details.progress, details); if (options.onDownloadProgress) options.onDownloadProgress(details); } catch (err) { fail(err); xhr.abort(); } };
           if (options.onUploadProgress || options.multipart && options.onProgress) {
             xhr.upload.onprogress = e => {
               const details = { progress: e.lengthComputable && e.total ? Math.round(e.loaded / e.total * 100) : null,
