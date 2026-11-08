@@ -1,3 +1,8 @@
+/**
+ * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
+ * Version: 0.0.7
+ */
+
 class FetchX {
   constructor() {
     this.xhr = null;
