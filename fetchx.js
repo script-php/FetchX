@@ -1,6 +1,6 @@
 /**
  * FetchX - A lightweight, promise-based HTTP client for the browser using XMLHttpRequest.
- * Version: 0.0.17
+ * Version: 0.0.18
  */
 
 (function (root, factory) {
@@ -197,7 +197,7 @@
       const urlParams = typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams;
       const blob = typeof Blob !== 'undefined' && body instanceof Blob;
       const binary = body instanceof ArrayBuffer || ArrayBuffer.isView(body);
-      if (formData || options.multipart) removeHeader(config.headers, 'Content-Type');
+      if (formData) removeHeader(config.headers, 'Content-Type');
       else if (isPlainObject(body) || Array.isArray(body)) {
         if (!getHeader(config.headers, 'Content-Type')) setHeader(config.headers, 'Content-Type', 'application/json');
       } else if (urlParams) {
@@ -313,7 +313,8 @@
             signal.addEventListener('abort', onSignalAbort, { once: true });
             if (signal.aborted) return cancelXHR();
           }
-          xhr.send(isBody(payload) ? payload : null);
+          // XHR forbids a request body for GET/HEAD. Interceptors may change the method.
+          xhr.send(config.method === 'GET' || config.method === 'HEAD' ? null : (isBody(payload) ? payload : null));
         } catch (error) { fail(error); }
       });
       } finally {
